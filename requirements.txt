@@ -1,0 +1,12 @@
+mlx-whisper==0.4.3
+ffmpeg-python==0.2.0
+tqdm==4.67.3
+pydub==0.25.1
+silero-vad==6.2.1
+soundfile==0.13.1
+requests
+huggingface_hub
+torch
+torchaudio
+numpy
+scipy
