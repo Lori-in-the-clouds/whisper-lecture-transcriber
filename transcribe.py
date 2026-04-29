@@ -69,7 +69,7 @@ def transcribe_mlx(
     output_dir="transcriptions",
     model="Large",
     use_preprocessing=True,
-    preprocessing_mode="light",   # 👈 NUOVO PARAMETRO
+    preprocessing_mode="light",
     keep_processed_audio=True,
     processed_dir="processed_audio",
     language="en"
