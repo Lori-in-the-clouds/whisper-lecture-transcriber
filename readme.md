@@ -32,34 +32,37 @@ Or, more honestly:
     ```
 ---
 ## ▶️ 3. Usage
-- Basic example:
+Currently, the tool is configured via the `if __name__ == "__main__":` block in `transcribe.py`. You can run it with:
   
-    ```bash
-    python main.py audio.m4a
-    ```
-- With options:
-  
-    ```bash
-    python main.py audio.m4a --model Large --mode aggressive --lang it
-    ```
+```bash
+python transcribe.py
+```
+
 ---
-## 🧠 4. Parameters
-The tool supports the following parameters:
-| Parameter         | Default  | Description                                   |
-|------------------|----------|-----------------------------------------------|
-| `input`          | required | Path to audio file                            |
-| `--model`        | Large    | Whisper model: Large or Turbo                 |
-| `--mode`         | light    | Audio preprocessing: light or aggressive      |
-| `--lang`         | en       | Language (en, it, etc.)                       |
-| `--no-preprocess`| off      | Disable audio preprocessing                   |
-| `--keep-audio`   | off      | Keep processed audio file                     |
+## 🧠 4. Features & Parameters
 
+### 🚀 4.1. Key Features
+- **Real-time Progress Bars**: Both audio preprocessing and Whisper transcription show live progress using `tqdm`.
+- **Advanced Audio Cleanup**: Automatically removes digital clicks, fixes clipping, and enhances voice clarity using professional FFmpeg filters.
+- **Apple Silicon Optimized**: Uses `mlx-whisper` for lightning-fast performance on Mac.
 
-### 🔊 4.1. Preprocessing modes
- - **light** → preserves natural sound with minimal filtering (recommended for clean audio)  
- - **aggressive** → applies stronger noise reduction, ideal for noisy environments (e.g., classrooms, distant microphones)
+### 🎛️ 4.2. Parameters (transcribe_mlx)
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `file_path` | required | Path to audio file |
+| `model` | `Large` | Whisper model: `Large` or `Turbo` |
+| `mode` | `balanced` | Preprocessing: `light`, `balanced`, `aggressive` |
+| `language` | `it` | Transcription language |
+| `use_preprocessing` | `True` | Enable/Disable audio filtering |
+| `keep_audio` | `True` | Keep the processed `.mp4` file in `processed_audio/` |
 
-### 📁 4.2. Output
-* **Transcripts** are saved in: `transcriptions/`
-* **Processed audio** (optional): `processed_audio/`
+### 🔊 4.3. Preprocessing modes
+ - **light** → Minimal filtering, preserves natural sound.
+ - **balanced** → (Default) Digital cleanup + voice clarity boost. Recommended for most lectures.
+ - **aggressive** → Strong noise reduction for very noisy environments.
+
+### 📁 4.4. Output
+* **Transcripts** (`.txt`) are saved in: `transcriptions/`
+* **Processed audio** (`.mp4`): saved in: `processed_audio/`
+* **Paths**: All folders are created automatically relative to the script directory.
 ---
