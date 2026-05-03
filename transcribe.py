@@ -214,7 +214,7 @@ def transcribe_mlx(
         result = mlx_whisper.transcribe(
             str(audio_to_use),
             path_or_hf_repo=model_name,
-            verbose=True,
+            verbose=False,
             language=language,
             temperature=0.0,
             condition_on_previous_text=False,
@@ -245,10 +245,10 @@ def transcribe_mlx(
 # =========================
 if __name__ == "__main__":
     transcribe_mlx(
-        "/Users/lorenzodimaio/Downloads/Scalable 30-04_parte_1.m4a",
-        model="Large",
+        "/Users/lorenzodimaio/Downloads/Scalable 23-04 parte 3.m4a",
+        model="Large", #Large, Turbo
         use_preprocessing=True,
-        preprocessing_mode="balanced", #light, balanced, aggressive
+        preprocessing_mode="aggressive", #light, balanced, aggressive
         language="it",
         keep_processed_audio=True
     )
