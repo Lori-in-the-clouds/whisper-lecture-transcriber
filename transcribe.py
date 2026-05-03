@@ -166,7 +166,7 @@ def transcribe_mlx(
     model="Large",
     use_preprocessing=True,
     preprocessing_mode="balanced",
-    language="it",
+    language="en",
     keep_processed_audio=True,
     processed_dir=None
 ):
@@ -248,7 +248,7 @@ if __name__ == "__main__":
         "/Users/lorenzodimaio/Downloads/Scalable 30-04_parte_1.m4a",
         model="Large",
         use_preprocessing=True,
-        preprocessing_mode="balanced",
+        preprocessing_mode="balanced", #light, balanced, aggressive
         language="it",
         keep_processed_audio=True
     )
