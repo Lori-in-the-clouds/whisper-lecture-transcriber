@@ -245,10 +245,10 @@ def transcribe_mlx(
 # =========================
 if __name__ == "__main__":
     transcribe_mlx(
-        "/Users/lorenzodimaio/Downloads/Scalable 23-04 parte 3.m4a",
+        "/Users/lorenzodimaio/Downloads/Big data 22-09 parte 1.m4a",
         model="Large", #Large, Turbo
         use_preprocessing=True,
-        preprocessing_mode="aggressive", #light, balanced, aggressive
-        language="it",
+        preprocessing_mode="balanced", #light, balanced, aggressive
+        language="en",
         keep_processed_audio=True
     )

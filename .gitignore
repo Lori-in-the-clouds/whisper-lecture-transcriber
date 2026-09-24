@@ -5,3 +5,6 @@
 /processed_audio
 /transcriptions
 /whisper_env
+/data
+/__pycache__
+*.pyc

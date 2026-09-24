@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Transcribo</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='polish.css') }}">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Transcribo"><span class="wave-mark"><i></i><i></i><i></i><i></i><i></i></span><strong>Transcribo</strong></a>
+      <button class="drawer-toggle" id="drawerToggle" aria-label="Toggle controls" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.25" y="4.25" width="17.5" height="15.5" rx="3.25"></rect><path d="M15.25 4.75v14.5"></path><path class="drawer-chevron" d="m11.25 9-3 3 3 3"></path></svg></button>
+    </header>
+
+    <div class="workspace">
+      <section class="transcript-panel">
+        <div class="transcript-toolbar">
+          <div><span class="section-label">LIVE TRANSCRIPT</span><h1 id="previewTitle">No audio selected</h1></div>
+          <div class="transcript-actions"><button id="stopCurrent" class="stop-button is-hidden">Stop transcription</button><a id="downloadCurrent" class="secondary-button is-hidden" href="#">Download TXT</a></div>
+        </div>
+        <div class="phase-progress" id="phaseProgress">
+          <div class="phase-row"><span>Preprocessing</span><div><i id="preprocessingBar"></i></div><b id="preprocessingLabel">0%</b></div>
+          <div class="phase-row"><span>Transcription</span><div><i id="transcriptionBar"></i></div><b id="transcriptionLabel">0%</b></div>
+        </div>
+        <div class="live-stage">
+          <div id="emptyPreview" class="empty-preview"><div class="sound-orbit"><span></span><span></span><span></span><span></span><span></span></div><strong>Your transcript will appear here.</strong><p>Add one or more audio files from the panel on the right.</p></div>
+          <article id="transcriptText" class="transcript-text is-hidden"></article>
+        </div>
+      </section>
+
+      <aside class="control-drawer" id="controlDrawer">
+        <div class="drawer-scroll">
+          <section class="drawer-section first-section">
+            <div class="drawer-heading"><div><span class="section-label">FILES</span><h2>Transcription queue</h2></div><span id="queueCount" class="count-badge">0</span></div>
+            <label class="dropzone" id="dropzone" for="fileInput"><input id="fileInput" type="file" accept="audio/*,.m4a,.mp4,.mov" multiple hidden><span class="upload-icon">＋</span><span><strong>Choose audio files</strong><small>or drag them here</small></span></label>
+            <div id="stagedWrap" class="staged-wrap is-hidden"><div class="staged-title"><span>Ready to add</span><button id="clearFiles" class="text-button">Clear</button></div><div id="stagedFiles" class="staged-files"></div></div>
+          </section>
+
+          <section class="drawer-section">
+            <span class="section-label">SETTINGS</span>
+            <div class="config-grid"><label class="field"><span>Language</span><select id="language"><option value="it">Italian</option><option value="en">English</option><option value="fr">French</option><option value="de">German</option><option value="es">Spanish</option><option value="auto">Auto detect</option></select></label><label class="field"><span>Model</span><select id="model"><option value="Turbo">Turbo · Fast</option><option value="Large">Large · Accurate</option></select></label></div>
+            <div class="device-setting"><strong>Processing device</strong><div class="segmented device-selector" id="computeDevices"><button class="active" data-value="gpu">GPU</button><button data-value="cpu">CPU</button></div></div>
+            <div class="option-title"><div><strong>Audio preprocessing</strong><small>Noise reduction and normalization</small></div><label class="switch"><input id="usePreprocessing" type="checkbox" checked><span></span></label></div>
+            <div class="segmented preprocessing-selector" id="preprocessModes"><button data-value="light">Light</button><button class="active" data-value="balanced">Balanced</button><button data-value="aggressive">Strong</button></div>
+            <label class="check-row"><input id="keepProcessed" type="checkbox"><span class="custom-check"></span><span><strong>Keep processed audio</strong><small>Save the cleaned audio copy</small></span></label>
+            <label class="check-row"><input id="mergeFiles" type="checkbox"><span class="custom-check"></span><span><strong>Merge transcripts</strong><small>Add Part 1, Part 2… headings</small></span></label>
+            <label id="mergeNameWrap" class="field merge-name is-hidden"><span>Merged file name</span><input id="mergeName" value="merged_lectures" maxlength="80"></label>
+            <button id="startButton" class="primary-button" disabled><span>Add to queue</span><b>→</b></button><p id="formError" class="form-error"></p>
+          </section>
+
+          <section class="drawer-section queue-section">
+            <span class="section-label">QUEUE</span>
+            <div id="queueList" class="queue-list"><div class="queue-empty"><p>No audio in queue</p></div></div>
+            <div id="mergedOutputs" class="merged-outputs"></div>
+          </section>
+        </div>
+      </aside>
+      <button class="drawer-backdrop" id="drawerBackdrop" aria-label="Close controls"></button>
+    </div>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body></html>
