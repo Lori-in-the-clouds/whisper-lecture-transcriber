@@ -38,6 +38,7 @@ class Job:
     merge_requested: bool
     merge_name: str
     compute_device: str
+    preprocessing_sample_rate: str = "source"
     status: str = "queued"
     phase: str = "waiting"
     progress: float = 0.0
@@ -222,7 +223,8 @@ class QueueManager:
 
         try:
             audio = self.service.prepare_audio(
-                Path(job.source_path), preprocessing_mode=job.preprocessing_mode, on_phase=on_phase,
+                Path(job.source_path), preprocessing_mode=job.preprocessing_mode,
+                preprocessing_sample_rate=job.preprocessing_sample_rate, on_phase=on_phase,
                 should_cancel=self.cancel_events[job_id].is_set,
                 should_pause=self.pause_events[job_id].is_set,
                 on_pause_state=on_pause_state,
@@ -391,6 +393,7 @@ def create_jobs():
         return jsonify({"error": "Select at least one audio file."}), 400
     model, language = request.form.get("model", "Turbo"), request.form.get("language", "it")
     mode = request.form.get("preprocessing_mode", "balanced")
+    preprocessing_sample_rate = request.form.get("preprocessing_sample_rate", "source")
     use_preprocessing = request.form.get("use_preprocessing", "true") == "true"
     preprocessing_workers = None
     if use_preprocessing:
@@ -404,6 +407,7 @@ def create_jobs():
     compute_device = request.form.get("compute_device", "gpu").lower()
     if (model not in {"Turbo", "Large"} or mode not in {"light", "balanced", "aggressive"}
             or compute_device not in {"gpu", "cpu"}
+            or preprocessing_sample_rate not in {"source", "32000", "16000"}
             or (preprocessing_workers is not None and preprocessing_workers not in range(1, 5))):
         return jsonify({"error": "Invalid configuration."}), 400
     if not re.fullmatch(r"[a-zA-Z-]{2,12}|auto", language):
@@ -418,7 +422,7 @@ def create_jobs():
         job_id = uuid.uuid4().hex
         stored_path = UPLOAD_DIR / f"{job_id}{extension}"
         upload.save(stored_path)
-        jobs.append(Job(job_id, group_id, original, str(stored_path), model, language, use_preprocessing, mode, keep_processed, merge_requested, merge_name, compute_device))
+        jobs.append(Job(job_id, group_id, original, str(stored_path), model, language, use_preprocessing, mode, keep_processed, merge_requested, merge_name, compute_device, preprocessing_sample_rate))
     manager.add(jobs, preprocessing_workers)
     return jsonify({"group_id": group_id, "jobs": [asdict(job) for job in jobs]}), 201
 

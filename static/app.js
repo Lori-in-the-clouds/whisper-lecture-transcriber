@@ -80,11 +80,13 @@ function bindSegmented(id) {
   };
 }
 bindSegmented('#preprocessModes');
+bindSegmented('#preprocessSampleRate');
 bindSegmented('#preprocessWorkers');
 bindSegmented('#computeDevices');
 function syncPreprocessControls() {
   const disabled = !$('#usePreprocessing').checked;
   $('#preprocessModes').classList.toggle('disabled', disabled);
+  $('#preprocessSampleRateSetting').classList.toggle('disabled', disabled);
   $('#preprocessWorkerSetting').classList.toggle('disabled', disabled);
 }
 $('#usePreprocessing').onchange = syncPreprocessControls;
@@ -104,6 +106,7 @@ startButton.onclick = async () => {
   form.append('compute_device', $('#computeDevices .active').dataset.value);
   form.append('use_preprocessing', $('#usePreprocessing').checked);
   form.append('preprocessing_mode', $('#preprocessModes .active').dataset.value);
+  form.append('preprocessing_sample_rate', $('#preprocessSampleRate .active').dataset.value);
   form.append('preprocessing_workers', $('#preprocessWorkers .active').dataset.value);
   form.append('keep_processed_audio', $('#keepProcessed').checked);
   form.append('merge_requested', mergeFiles.checked);

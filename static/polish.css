@@ -133,9 +133,10 @@ body:not(.is-transcribing) .transcript-text::after { animation-play-state: pause
   box-shadow: inset 0 0 0 1px var(--blue), 0 3px 10px rgba(0, 102, 204, .08);
 }
 
-.worker-setting { margin-top: 16px; }
+.sampling-setting, .worker-setting { margin-top: 16px; }
+.sample-rate-selector { margin-top: 8px; }
 .worker-selector { grid-template-columns: repeat(4, 1fr); margin-top: 8px; }
-.worker-setting.disabled { opacity: .4; pointer-events: none; }
+.sampling-setting.disabled, .worker-setting.disabled { opacity: .4; pointer-events: none; }
 .switch span { transition: background-color .24s ease, box-shadow .24s ease; }
 .switch span:hover { box-shadow: 0 0 0 4px rgba(0, 102, 204, .08); }
 .switch span::after { box-shadow: 0 1px 3px rgba(0, 0, 0, .18); transition: left .28s var(--ease-spring), transform .2s ease; }

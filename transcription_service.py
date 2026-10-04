@@ -51,6 +51,7 @@ class TranscriptionService:
 
     def transcribe(self, source: Path, *, model: str, language: str, use_preprocessing: bool,
                    preprocessing_mode: str, keep_processed_audio: bool, compute_device: str = "gpu",
+                   preprocessing_sample_rate: str = "source",
                    on_update: UpdateCallback, on_phase: PhaseCallback = lambda _phase, _progress: None,
                    should_cancel: Callable[[], bool] = lambda: False,
                    should_pause: Callable[[], bool] = lambda: False,
@@ -61,7 +62,8 @@ class TranscriptionService:
         try:
             if use_preprocessing:
                 audio = self.prepare_audio(
-                    source, preprocessing_mode=preprocessing_mode, on_phase=on_phase,
+                    source, preprocessing_mode=preprocessing_mode,
+                    preprocessing_sample_rate=preprocessing_sample_rate, on_phase=on_phase,
                     should_cancel=should_cancel, should_pause=should_pause,
                     on_pause_state=on_pause_state,
                 )
@@ -77,6 +79,7 @@ class TranscriptionService:
                 audio.unlink(missing_ok=True)
 
     def prepare_audio(self, source: Path, *, preprocessing_mode: str,
+                      preprocessing_sample_rate: str = "source",
                       on_phase: PhaseCallback = lambda _phase, _progress: None,
                       should_cancel: Callable[[], bool] = lambda: False,
                       should_pause: Callable[[], bool] = lambda: False,
@@ -87,7 +90,8 @@ class TranscriptionService:
         if should_cancel():
             raise TranscriptionCancelled()
         return self._preprocess_audio(
-            source, preprocessing_mode, on_phase, should_cancel, should_pause, on_pause_state,
+            source, preprocessing_mode, preprocessing_sample_rate, on_phase,
+            should_cancel, should_pause, on_pause_state,
         )
 
     def transcribe_prepared(self, audio: Path, *, model: str, language: str,
@@ -131,15 +135,21 @@ class TranscriptionService:
         if announced:
             on_pause_state(False)
 
-    def _preprocess_audio(self, source: Path, mode: str, on_phase: PhaseCallback,
+    def _preprocess_audio(self, source: Path, mode: str, sample_rate: str, on_phase: PhaseCallback,
                           should_cancel: Callable[[], bool], should_pause: Callable[[], bool],
                           on_pause_state: Callable[[bool], None]) -> Path:
         self.processed_dir.mkdir(parents=True, exist_ok=True)
         output = self.processed_dir / f"{source.stem}_{mode}.mp4"
         duration = max(legacy.get_audio_duration(source), 0.01)
+        filter_chain = legacy.get_filter_chain(mode)
+        if sample_rate != "source":
+            filter_chain = (
+                f"aresample={sample_rate},"
+                f"aformat=sample_fmts=fltp:channel_layouts=mono,{filter_chain}"
+            )
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
-            "-vn", "-ac", "1", "-ar", "16000", "-af", legacy.get_filter_chain(mode),
+            "-vn", "-ac", "1", "-ar", "16000", "-af", filter_chain,
             "-c:a", "aac", "-b:a", "128k", "-progress", "pipe:1", "-nostats", str(output),
         ]
         on_phase("preprocessing", 0.0)

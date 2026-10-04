@@ -56,6 +56,7 @@ Setting up Transcribo is fully automated. You don't need to manually configure e
    - **Model**: `Turbo` (Faster) or `Large` (More accurate). *Note: The first time you use a new model, it may take a few minutes to download its weights.*
    - **Language**: Auto-detect or force a specific language (e.g., Italian).
    - **Preprocessing**: `Light`, `Balanced` (Recommended), or `Strong` depending on the background noise of the original recording.
+   - **Filter sample rate**: `Original` preserves the previous behavior, `32 kHz` is a compromise, and `16 kHz` is fastest for Whisper. The final transcription audio is always mono 16 kHz.
    - **Preprocessing workers**: Choose how many recordings FFmpeg may preprocess simultaneously. Start with `2`; higher values use more CPU and disk bandwidth.
    - **Merge Transcripts**: If your lecture is split across multiple files, check this box. They will be processed as a group and exported as a single merged document.
 3. **Manage the Queue**: 
