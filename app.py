@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import re
 import threading
 import time
@@ -22,6 +21,7 @@ UPLOAD_DIR, OUTPUT_DIR, PROCESSED_DIR = DATA_DIR / "uploads", DATA_DIR / "transc
 for directory in (UPLOAD_DIR, OUTPUT_DIR, PROCESSED_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 ALLOWED_EXTENSIONS = {".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".mp4", ".mov"}
+MAX_PREPROCESSING_WORKERS = 4
 
 
 @dataclass
@@ -60,12 +60,20 @@ class QueueManager:
         self.pause_events: dict[str, threading.Event] = {}
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
-        self.work: queue.Queue[str] = queue.Queue()
         self.service = TranscriptionService(PROCESSED_DIR)
-        threading.Thread(target=self._worker, daemon=True, name="transcription-worker").start()
+        self.preprocessing_workers = 2
+        self.prepared_audio: dict[str, Path] = {}
+        for slot in range(MAX_PREPROCESSING_WORKERS):
+            threading.Thread(
+                target=self._preprocessing_worker, args=(slot,), daemon=True,
+                name=f"preprocessing-worker-{slot + 1}",
+            ).start()
+        threading.Thread(target=self._transcription_worker, daemon=True, name="transcription-worker").start()
 
-    def add(self, jobs: list[Job]) -> None:
+    def add(self, jobs: list[Job], preprocessing_workers: int | None = None) -> None:
         with self.changed:
+            if preprocessing_workers is not None:
+                self.preprocessing_workers = max(1, min(MAX_PREPROCESSING_WORKERS, preprocessing_workers))
             if jobs:
                 self.group_order[jobs[0].group_id] = [job.id for job in jobs]
             for job in jobs:
@@ -73,7 +81,11 @@ class QueueManager:
                 self.cancel_events[job.id] = threading.Event()
                 self.pause_events[job.id] = threading.Event()
                 self.order.append(job.id)
-                self.work.put(job.id)
+                if not job.use_preprocessing:
+                    job.status = "ready"
+                    job.phase = "ready"
+                    job.preprocessing_progress = 100.0
+                    self.prepared_audio[job.id] = Path(job.source_path)
             self.changed.notify_all()
 
     def cancel(self, job_id: str) -> bool:
@@ -86,13 +98,16 @@ class QueueManager:
             if not targets:
                 return False
             for target in targets:
-                if target.status in {"processing", "pausing", "paused", "stopping"}:
+                if target.status in {"preprocessing", "transcribing", "pausing", "paused", "stopping"}:
                     self.cancel_events[target.id].set()
                     self.pause_events[target.id].clear()
                     target.remove_requested = True
                     target.status = "stopping"
-                elif target.status == "queued":
+                elif target.status in {"queued", "ready"}:
                     self.cancel_events[target.id].set()
+                    audio = self.prepared_audio.pop(target.id, None)
+                    if audio and target.use_preprocessing and not target.keep_processed_audio:
+                        audio.unlink(missing_ok=True)
                     Path(target.source_path).unlink(missing_ok=True)
                     self._remove_job(target, finish_group=False)
                 else:
@@ -103,7 +118,7 @@ class QueueManager:
     def stop(self, job_id: str) -> bool:
         with self.changed:
             job = self.jobs.get(job_id)
-            if not job or job.status not in {"processing", "pausing", "paused"}:
+            if not job or job.status not in {"preprocessing", "transcribing", "pausing", "paused"}:
                 return False
             self.cancel_events[job_id].set()
             self.pause_events[job_id].clear()
@@ -114,7 +129,7 @@ class QueueManager:
     def pause(self, job_id: str) -> bool:
         with self.changed:
             job = self.jobs.get(job_id)
-            if not job or job.status != "processing":
+            if not job or job.status not in {"preprocessing", "transcribing"}:
                 return False
             self.pause_events[job_id].set()
             job.status = "pausing"
@@ -127,7 +142,7 @@ class QueueManager:
             if not job or job.status not in {"pausing", "paused"}:
                 return False
             self.pause_events[job_id].clear()
-            job.status = "processing"
+            job.status = job.phase
             self.changed.notify_all()
             return True
 
@@ -157,38 +172,116 @@ class QueueManager:
             positions = {job_id: index for index, job_id in enumerate(self.order)}
             for group_jobs in self.group_order.values():
                 group_jobs.sort(key=lambda job_id: positions.get(job_id, len(positions)))
-            with self.work.mutex:
-                current = list(self.work.queue)
-                remaining = [job_id for job_id in current if job_id not in requested_order]
-                self.work.queue.clear()
-                self.work.queue.extend(requested_order + remaining)
             self.changed.notify_all()
             return True
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
-            return {"jobs": [asdict(self.jobs[job_id]) for job_id in self.order], "merged_outputs": dict(self.group_outputs)}
+            return {
+                "jobs": [asdict(self.jobs[job_id]) for job_id in self.order],
+                "merged_outputs": dict(self.group_outputs),
+                "preprocessing_workers": self.preprocessing_workers,
+            }
 
-    def _worker(self) -> None:
+    def _preprocessing_worker(self, slot: int) -> None:
         while True:
-            job_id = self.work.get()
-            try:
-                self._run(job_id)
-            finally:
-                self.work.task_done()
+            with self.changed:
+                job = self._wait_for_preprocessing_job(slot)
+                job.status = "preprocessing"
+                job.phase = "preprocessing"
+                self.changed.notify_all()
+            self._prepare(job.id)
 
-    def _run(self, job_id: str) -> None:
+    def _wait_for_preprocessing_job(self, slot: int) -> Job:
+        while True:
+            if slot < self.preprocessing_workers:
+                candidate = next(
+                    (self.jobs[job_id] for job_id in self.order if self.jobs[job_id].status == "queued"),
+                    None,
+                )
+                if candidate:
+                    return candidate
+            self.changed.wait()
+
+    def _prepare(self, job_id: str) -> None:
         with self.changed:
             job = self.jobs.get(job_id)
             if job is None:
                 return
-            if job.status == "cancelled":
-                Path(job.source_path).unlink(missing_ok=True)
-                self._finish_group_if_ready(job.group_id)
+
+        def on_phase(phase: str, progress: float) -> None:
+            with self.changed:
+                job.preprocessing_progress = progress
+                self.changed.notify_all()
+
+        def on_pause_state(paused: bool) -> None:
+            with self.changed:
+                if job.status != "stopping":
+                    job.status = "paused" if paused else "preprocessing"
+                self.changed.notify_all()
+
+        try:
+            audio = self.service.prepare_audio(
+                Path(job.source_path), preprocessing_mode=job.preprocessing_mode, on_phase=on_phase,
+                should_cancel=self.cancel_events[job_id].is_set,
+                should_pause=self.pause_events[job_id].is_set,
+                on_pause_state=on_pause_state,
+            )
+            if self.cancel_events[job_id].is_set():
+                if not job.keep_processed_audio:
+                    audio.unlink(missing_ok=True)
+                raise TranscriptionCancelled()
+            with self.changed:
+                self.prepared_audio[job_id] = audio
+                job.preprocessing_progress = 100.0
+                job.status = "ready"
+                job.phase = "ready"
+                self.changed.notify_all()
+        except TranscriptionCancelled:
+            with self.changed:
+                if job.remove_requested:
+                    self._remove_job(job, finish_group=False)
+                else:
+                    job.status = "cancelled"
+                    job.phase = "cancelled"
+                    job.error = None
+                self.changed.notify_all()
+            Path(job.source_path).unlink(missing_ok=True)
+            self._finish_group_if_ready(job.group_id)
+        except Exception as exc:
+            with self.changed:
+                job.error, job.status = str(exc), "failed"
+                job.phase = "failed"
+                self.changed.notify_all()
+            Path(job.source_path).unlink(missing_ok=True)
+            self._finish_group_if_ready(job.group_id)
+
+    def _transcription_worker(self) -> None:
+        while True:
+            with self.changed:
+                job = self._wait_for_ready_job()
+                audio = self.prepared_audio.pop(job.id)
+                job.status = "transcribing"
+                job.phase = "transcription"
+                self.changed.notify_all()
+            self._transcribe(job.id, audio)
+
+    def _wait_for_ready_job(self) -> Job:
+        terminal = {"completed", "failed", "cancelled"}
+        while True:
+            first_pending = next(
+                (self.jobs[job_id] for job_id in self.order if self.jobs[job_id].status not in terminal),
+                None,
+            )
+            if first_pending and first_pending.status == "ready":
+                return first_pending
+            self.changed.wait()
+
+    def _transcribe(self, job_id: str, audio: Path) -> None:
+        with self.changed:
+            job = self.jobs.get(job_id)
+            if job is None:
                 return
-            job.status = "processing"
-            job.phase = "preprocessing" if job.use_preprocessing else "transcription"
-            self.changed.notify_all()
 
         def on_update(text: str, progress: float) -> None:
             with self.changed:
@@ -200,24 +293,19 @@ class QueueManager:
         def on_phase(phase: str, progress: float) -> None:
             with self.changed:
                 job.phase = phase
-                if phase == "preprocessing":
-                    job.preprocessing_progress = progress
-                elif phase == "transcription":
-                    job.transcription_progress = progress
-                    job.progress = progress
+                job.transcription_progress = progress
+                job.progress = progress
                 self.changed.notify_all()
 
         def on_pause_state(paused: bool) -> None:
             with self.changed:
                 if job.status != "stopping":
-                    job.status = "paused" if paused else "processing"
+                    job.status = "paused" if paused else "transcribing"
                 self.changed.notify_all()
 
         try:
-            final_text = self.service.transcribe(
-                Path(job.source_path), model=job.model, language=job.language,
-                use_preprocessing=job.use_preprocessing, preprocessing_mode=job.preprocessing_mode,
-                keep_processed_audio=job.keep_processed_audio, compute_device=job.compute_device,
+            final_text = self.service.transcribe_prepared(
+                audio, model=job.model, language=job.language, compute_device=job.compute_device,
                 on_update=on_update, on_phase=on_phase,
                 should_cancel=self.cancel_events[job_id].is_set,
                 should_pause=self.pause_events[job_id].is_set,
@@ -225,8 +313,10 @@ class QueueManager:
             )
             if self.cancel_events[job_id].is_set():
                 raise TranscriptionCancelled()
-            output_name = self._unique_output_name(Path(job.source_name).stem)
-            (OUTPUT_DIR / output_name).write_text(final_text.strip() + "\n", encoding="utf-8")
+            output_name = None
+            if not job.merge_requested:
+                output_name = self._unique_output_name(Path(job.source_name).stem)
+                (OUTPUT_DIR / output_name).write_text(final_text.strip() + "\n", encoding="utf-8")
             with self.changed:
                 job.transcript, job.progress, job.output_file, job.status = final_text, 100.0, output_name, "completed"
                 job.preprocessing_progress = 100.0
@@ -236,7 +326,7 @@ class QueueManager:
         except TranscriptionCancelled:
             with self.changed:
                 if job.remove_requested:
-                    self._remove_job(job)
+                    self._remove_job(job, finish_group=False)
                 else:
                     job.status = "cancelled"
                     job.phase = "cancelled"
@@ -248,8 +338,12 @@ class QueueManager:
                 job.phase = "failed"
                 self.changed.notify_all()
         finally:
+            if job.use_preprocessing and not job.keep_processed_audio:
+                audio.unlink(missing_ok=True)
             Path(job.source_path).unlink(missing_ok=True)
             self._finish_group_if_ready(job.group_id)
+            with self.changed:
+                self.changed.notify_all()
 
     def _finish_group_if_ready(self, group_id: str) -> None:
         with self.changed:
@@ -259,13 +353,22 @@ class QueueManager:
             if not jobs[0].merge_requested or any(job.status != "completed" for job in jobs):
                 return
             sections = [f"-----------------\nPart {index}\n-----------------\n\n{job.transcript.strip()}" for index, job in enumerate(jobs, 1)]
-            filename = self._unique_output_name(Path(jobs[0].merge_name or "trascrizione_unita").stem)
+            filename = self._unique_output_name(self._merged_output_stem(jobs[0].merge_name), preserve_name=True)
             (OUTPUT_DIR / filename).write_text("\n\n".join(sections) + "\n", encoding="utf-8")
             self.group_outputs[group_id] = filename
             self.changed.notify_all()
 
-    def _unique_output_name(self, stem: str) -> str:
-        safe = secure_filename(stem).strip("._") or "trascrizione"
+    @staticmethod
+    def _merged_output_stem(requested_name: str) -> str:
+        # Keep the user-facing name (including spaces) while preventing it from
+        # escaping the output directory or producing an invalid download name.
+        stem = re.sub(r"\.txt$", "", (requested_name or "").strip(), flags=re.IGNORECASE)
+        stem = re.sub(r'[\\/\x00-\x1f\x7f<>:"|?*]', "_", stem).strip(" .")
+        return stem[:80].rstrip(" .") or "trascrizione_unita"
+
+    def _unique_output_name(self, stem: str, *, preserve_name: bool = False) -> str:
+        safe = stem.strip("._") if preserve_name else secure_filename(stem).strip("._")
+        safe = safe or "trascrizione"
         candidate, counter = f"{safe}.txt", 2
         while (OUTPUT_DIR / candidate).exists():
             candidate, counter = f"{safe}_{counter}.txt", counter + 1
@@ -289,11 +392,19 @@ def create_jobs():
     model, language = request.form.get("model", "Turbo"), request.form.get("language", "it")
     mode = request.form.get("preprocessing_mode", "balanced")
     use_preprocessing = request.form.get("use_preprocessing", "true") == "true"
+    preprocessing_workers = None
+    if use_preprocessing:
+        try:
+            preprocessing_workers = int(request.form.get("preprocessing_workers", "2"))
+        except ValueError:
+            return jsonify({"error": "Invalid preprocessing worker count."}), 400
     keep_processed = request.form.get("keep_processed_audio", "false") == "true"
     merge_requested = request.form.get("merge_requested", "false") == "true"
     merge_name = request.form.get("merge_name", "trascrizione_unita")
     compute_device = request.form.get("compute_device", "gpu").lower()
-    if model not in {"Turbo", "Large"} or mode not in {"light", "balanced", "aggressive"} or compute_device not in {"gpu", "cpu"}:
+    if (model not in {"Turbo", "Large"} or mode not in {"light", "balanced", "aggressive"}
+            or compute_device not in {"gpu", "cpu"}
+            or (preprocessing_workers is not None and preprocessing_workers not in range(1, 5))):
         return jsonify({"error": "Invalid configuration."}), 400
     if not re.fullmatch(r"[a-zA-Z-]{2,12}|auto", language):
         return jsonify({"error": "Invalid language code."}), 400
@@ -308,7 +419,7 @@ def create_jobs():
         stored_path = UPLOAD_DIR / f"{job_id}{extension}"
         upload.save(stored_path)
         jobs.append(Job(job_id, group_id, original, str(stored_path), model, language, use_preprocessing, mode, keep_processed, merge_requested, merge_name, compute_device))
-    manager.add(jobs)
+    manager.add(jobs, preprocessing_workers)
     return jsonify({"group_id": group_id, "jobs": [asdict(job) for job in jobs]}), 201
 
 
@@ -322,14 +433,14 @@ def cancel_job(job_id: str):
 @app.post("/api/jobs/<job_id>/stop")
 def stop_job(job_id: str):
     if not manager.stop(job_id):
-        return jsonify({"error": "Only an active transcription can be stopped."}), 409
+        return jsonify({"error": "Only an active job can be stopped."}), 409
     return jsonify({"ok": True})
 
 
 @app.post("/api/jobs/<job_id>/pause")
 def pause_job(job_id: str):
     if not manager.pause(job_id):
-        return jsonify({"error": "Only an active transcription can be paused."}), 409
+        return jsonify({"error": "Only an active job can be paused."}), 409
     return jsonify({"ok": True})
 
 

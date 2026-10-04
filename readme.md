@@ -16,6 +16,7 @@ A powerful, standalone web application designed to turn **hours of lecture recor
 
 - **Blazing Fast**: Hardware-accelerated transcription using advanced AI frameworks.
 - **Smart Audio Preprocessing**: Built-in FFmpeg filters to clean up noisy classroom recordings, fix clipping, and enhance voice clarity.
+- **Parallel Preprocessing**: Choose 1–4 FFmpeg workers to prepare multiple queued recordings at the same time while keeping MLX transcription ordered and single-threaded.
 - **Drag & Drop Queue**: Queue multiple recordings, reorder them on the fly, and pause/resume transcriptions anytime.
 - **Merge Transcripts**: Seamlessly group multiple audio parts together and export them into a single, structured text file.
 - **Privacy First**: Everything runs 100% locally on your machine. No internet connection required, no data sent to the cloud.
@@ -55,6 +56,7 @@ Setting up Transcribo is fully automated. You don't need to manually configure e
    - **Model**: `Turbo` (Faster) or `Large` (More accurate). *Note: The first time you use a new model, it may take a few minutes to download its weights.*
    - **Language**: Auto-detect or force a specific language (e.g., Italian).
    - **Preprocessing**: `Light`, `Balanced` (Recommended), or `Strong` depending on the background noise of the original recording.
+   - **Preprocessing workers**: Choose how many recordings FFmpeg may preprocess simultaneously. Start with `2`; higher values use more CPU and disk bandwidth.
    - **Merge Transcripts**: If your lecture is split across multiple files, check this box. They will be processed as a group and exported as a single merged document.
 3. **Manage the Queue**: 
    - Click **"Add to queue"** to send them to the processing queue.

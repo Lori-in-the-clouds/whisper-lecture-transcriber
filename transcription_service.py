@@ -58,25 +58,60 @@ class TranscriptionService:
         source, audio = source.resolve(), source.resolve()
         if self.engine_name != "mlx":
             raise RuntimeError("This app requires macOS with mlx-whisper installed")
+        try:
+            if use_preprocessing:
+                audio = self.prepare_audio(
+                    source, preprocessing_mode=preprocessing_mode, on_phase=on_phase,
+                    should_cancel=should_cancel, should_pause=should_pause,
+                    on_pause_state=on_pause_state,
+                )
+            else:
+                on_phase("preprocessing", 100.0)
+            return self.transcribe_prepared(
+                audio, model=model, language=language, compute_device=compute_device,
+                on_update=on_update, on_phase=on_phase, should_cancel=should_cancel,
+                should_pause=should_pause, on_pause_state=on_pause_state,
+            )
+        finally:
+            if use_preprocessing and not keep_processed_audio:
+                audio.unlink(missing_ok=True)
+
+    def prepare_audio(self, source: Path, *, preprocessing_mode: str,
+                      on_phase: PhaseCallback = lambda _phase, _progress: None,
+                      should_cancel: Callable[[], bool] = lambda: False,
+                      should_pause: Callable[[], bool] = lambda: False,
+                      on_pause_state: Callable[[bool], None] = lambda _paused: None) -> Path:
+        """Run the existing preprocessing unchanged, without occupying the MLX worker."""
+        source = source.resolve()
+        self._wait_while_paused(should_pause, should_cancel, on_pause_state)
+        if should_cancel():
+            raise TranscriptionCancelled()
+        return self._preprocess_audio(
+            source, preprocessing_mode, on_phase, should_cancel, should_pause, on_pause_state,
+        )
+
+    def transcribe_prepared(self, audio: Path, *, model: str, language: str,
+                            compute_device: str = "gpu", on_update: UpdateCallback,
+                            on_phase: PhaseCallback = lambda _phase, _progress: None,
+                            should_cancel: Callable[[], bool] = lambda: False,
+                            should_pause: Callable[[], bool] = lambda: False,
+                            on_pause_state: Callable[[bool], None] = lambda _paused: None) -> str:
+        """Transcribe an original or already-preprocessed file on the single MLX worker."""
+        if self.engine_name != "mlx":
+            raise RuntimeError("This app requires macOS with mlx-whisper installed")
         import mlx.core as mx
         previous_device = mx.default_device()
         mx.set_default_device(mx.gpu if compute_device == "gpu" else mx.cpu)
         try:
-            self._wait_while_paused(should_pause, should_cancel, on_pause_state)
-            if use_preprocessing:
-                audio = self._preprocess_audio(source, preprocessing_mode, on_phase, should_cancel,
-                                               should_pause, on_pause_state)
-            else:
-                on_phase("preprocessing", 100.0)
             if should_cancel():
                 raise TranscriptionCancelled()
             self._wait_while_paused(should_pause, should_cancel, on_pause_state)
             on_phase("transcription", 0.0)
-            return self._transcribe_mlx_chunks(audio, model, language, on_update, should_cancel,
-                                               should_pause, on_pause_state)
+            return self._transcribe_mlx_chunks(
+                Path(audio).resolve(), model, language, on_update, should_cancel,
+                should_pause, on_pause_state,
+            )
         finally:
-            if use_preprocessing and not keep_processed_audio:
-                audio.unlink(missing_ok=True)
             mx.set_default_device(previous_device)
 
     def health(self) -> dict[str, object]:

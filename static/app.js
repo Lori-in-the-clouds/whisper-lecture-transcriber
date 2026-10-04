@@ -80,8 +80,15 @@ function bindSegmented(id) {
   };
 }
 bindSegmented('#preprocessModes');
+bindSegmented('#preprocessWorkers');
 bindSegmented('#computeDevices');
-$('#usePreprocessing').onchange = (event) => $('#preprocessModes').classList.toggle('disabled', !event.target.checked);
+function syncPreprocessControls() {
+  const disabled = !$('#usePreprocessing').checked;
+  $('#preprocessModes').classList.toggle('disabled', disabled);
+  $('#preprocessWorkerSetting').classList.toggle('disabled', disabled);
+}
+$('#usePreprocessing').onchange = syncPreprocessControls;
+syncPreprocessControls();
 mergeFiles.onchange = () => $('#mergeNameWrap').classList.toggle('is-hidden', !mergeFiles.checked);
 
 startButton.onclick = async () => {
@@ -97,6 +104,7 @@ startButton.onclick = async () => {
   form.append('compute_device', $('#computeDevices .active').dataset.value);
   form.append('use_preprocessing', $('#usePreprocessing').checked);
   form.append('preprocessing_mode', $('#preprocessModes .active').dataset.value);
+  form.append('preprocessing_workers', $('#preprocessWorkers .active').dataset.value);
   form.append('keep_processed_audio', $('#keepProcessed').checked);
   form.append('merge_requested', mergeFiles.checked);
   form.append('merge_name', $('#mergeName').value || 'merged_lectures');
@@ -113,7 +121,9 @@ startButton.onclick = async () => {
   }
 };
 
-const statusIcon = (status) => ({ queued: '⠿', processing: '◌', pausing: 'Ⅱ', paused: 'Ⅱ', stopping: '◌', completed: '✓', failed: '!', cancelled: '×' })[status];
+const activeStatuses = ['preprocessing', 'ready', 'transcribing', 'pausing', 'paused', 'stopping'];
+const runningStatuses = ['preprocessing', 'transcribing'];
+const statusIcon = (status) => ({ queued: '⠿', preprocessing: '◌', ready: '✓', transcribing: '◌', pausing: 'Ⅱ', paused: 'Ⅱ', stopping: '◌', completed: '✓', failed: '!', cancelled: '×' })[status];
 const mergePalette = ['#007aff', '#af52de', '#ff9500', '#34c759', '#ff2d55', '#5ac8fa'];
 const groupColors = new Map();
 let nextColorIndex = 0;
@@ -134,16 +144,18 @@ function mergedTranscript(job, jobs) {
 }
 function statusText(job) {
   if (job.status === 'failed') return job.error;
-  if (job.status === 'processing') return job.phase === 'preprocessing' ? `Preprocessing · ${Math.round(job.preprocessing_progress)}%` : `Transcribing · ${Math.round(job.transcription_progress)}%`;
+  if (job.status === 'preprocessing') return `Preprocessing · ${Math.round(job.preprocessing_progress)}%`;
+  if (job.status === 'ready') return 'Ready for transcription';
+  if (job.status === 'transcribing') return `Transcribing · ${Math.round(job.transcription_progress)}%`;
   if (job.status === 'paused') return job.phase === 'preprocessing' ? `Paused · ${Math.round(job.preprocessing_progress)}%` : `Paused · ${Math.round(job.transcription_progress)}%`;
   return ({ queued: 'Waiting · drag to reorder', pausing: 'Pausing…', stopping: 'Stopping…', completed: 'Completed', cancelled: 'Cancelled' })[job.status];
 }
 
 function pauseControl(job) {
-  if (!['processing', 'pausing', 'paused'].includes(job.status)) return '';
+  if (![...runningStatuses, 'pausing', 'paused'].includes(job.status)) return '';
   const resume = ['pausing', 'paused'].includes(job.status);
   const action = resume ? 'resume' : 'pause';
-  const label = resume ? 'Resume transcription' : 'Pause transcription';
+  const label = resume ? 'Resume job' : 'Pause job';
   const icon = resume
     ? '<path d="M8 5v14l11-7L8 5Z"/>'
     : '<path d="M7 5h4v14H7V5Zm6 0h4v14h-4V5Z"/>';
@@ -281,11 +293,11 @@ let isDraggingQueue = false;
 function renderState(state) {
   lastState = state;
   const jobs = state.jobs;
-  $('#queueCount').textContent = jobs.filter((job) => ['queued', 'processing', 'pausing', 'paused', 'stopping'].includes(job.status)).length;
+  $('#queueCount').textContent = jobs.filter((job) => ['queued', ...activeStatuses].includes(job.status)).length;
   const queue = $('#queueList');
   if (!isDraggingQueue && !queue.querySelector('.dropped')) {
     queue.innerHTML = !jobs.length ? '<div class="queue-empty"><p>No audio in queue</p></div>' : jobs.map((job) => {
-      const currentProgress = job.phase === 'preprocessing' ? job.preprocessing_progress : job.transcription_progress;
+      const currentProgress = ['preprocessing', 'ready'].includes(job.phase) ? job.preprocessing_progress : job.transcription_progress;
       return `
       <div class="queue-item ${job.id === selectedPreviewId ? 'selected' : ''} ${job.merge_requested ? 'merge-group' : ''}" style="${job.merge_requested ? `--group-color:${mergeColor(job.group_id)}` : ''}" data-id="${job.id}" data-group-id="${job.group_id}" data-status="${job.status}" draggable="${job.status === 'queued'}" role="button" tabindex="0">
         <span class="queue-state ${job.status}">${statusIcon(job.status)}</span>
@@ -295,7 +307,7 @@ function renderState(state) {
     }).join('');
     bindQueueInteractions();
   }
-  if (!selectedPreviewId || !jobs.some((job) => job.id === selectedPreviewId)) selectedPreviewId = jobs.find((job) => ['processing', 'pausing', 'paused', 'stopping'].includes(job.status))?.id || jobs[0]?.id;
+  if (!selectedPreviewId || !jobs.some((job) => job.id === selectedPreviewId)) selectedPreviewId = jobs.find((job) => activeStatuses.includes(job.status))?.id || jobs[0]?.id;
   renderPreview(jobs.find((job) => job.id === selectedPreviewId), jobs, state.merged_outputs);
   $('#mergedOutputs').innerHTML = Object.values(state.merged_outputs).map((name) => `<a href="/download/${encodeURIComponent(name)}"><span>✓</span><div><strong>Merged file ready</strong><small>${escapeHtml(name)}</small></div><b>↓</b></a>`).join('');
 }
@@ -319,11 +331,11 @@ function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.mer
     return;
   }
   const isMerge = job.merge_requested;
-  const activeJob = isMerge ? jobs.find((item) => item.group_id === job.group_id && ['processing', 'pausing', 'paused', 'stopping'].includes(item.status)) : job;
+  const activeJob = isMerge ? jobs.find((item) => item.group_id === job.group_id && activeStatuses.includes(item.status)) : job;
   const displayJob = activeJob || job;
   activeStopId = activeJob?.id || null;
   document.body.classList.toggle('preview-paused', ['pausing', 'paused'].includes(activeJob?.status));
-  document.body.classList.toggle('is-transcribing', ['processing', 'pausing', 'paused', 'stopping'].includes(activeJob?.status));
+  document.body.classList.toggle('is-transcribing', activeStatuses.includes(activeJob?.status));
   const mergeTitle = (job.merge_name || 'merged_lectures').replace(/\.txt$/i, '');
   $('#previewTitle').textContent = isMerge ? `${mergeTitle}.txt` : job.source_name;
   const preprocessing = displayJob.use_preprocessing ? displayJob.preprocessing_progress : 100;
@@ -339,9 +351,9 @@ function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.mer
     $('#transcriptText').textContent = previewText;
     $('#transcriptText').scrollTop = $('#transcriptText').scrollHeight;
   }
-  stop.classList.toggle('is-hidden', !activeJob || !['processing', 'pausing', 'paused', 'stopping'].includes(activeJob.status));
+  stop.classList.toggle('is-hidden', !activeJob || ![...runningStatuses, 'pausing', 'paused', 'stopping'].includes(activeJob.status));
   stop.disabled = activeJob?.status === 'stopping';
-  stop.textContent = activeJob?.status === 'stopping' ? 'Stopping…' : 'Stop transcription';
+  stop.textContent = activeJob?.status === 'stopping' ? 'Stopping…' : (activeJob?.phase === 'preprocessing' ? 'Stop preprocessing' : 'Stop transcription');
   const download = $('#downloadCurrent');
   const outputFile = isMerge ? mergedOutputs[job.group_id] : job.output_file;
   download.classList.toggle('is-hidden', !outputFile);
