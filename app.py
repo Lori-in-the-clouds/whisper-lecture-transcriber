@@ -13,6 +13,7 @@ from typing import Any
 from flask import Flask, Response, jsonify, render_template, request, send_from_directory
 from werkzeug.utils import secure_filename
 
+from output_naming import transcript_output_stem
 from transcription_service import TranscriptionCancelled, TranscriptionService
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -47,6 +48,7 @@ class Job:
     transcript: str = ""
     output_file: str | None = None
     error: str | None = None
+    device_fallback: bool = False
     remove_requested: bool = False
     created_at: float = field(default_factory=time.time)
 
@@ -306,18 +308,40 @@ class QueueManager:
                 self.changed.notify_all()
 
         try:
-            final_text = self.service.transcribe_prepared(
-                audio, model=job.model, language=job.language, compute_device=job.compute_device,
-                on_update=on_update, on_phase=on_phase,
-                should_cancel=self.cancel_events[job_id].is_set,
-                should_pause=self.pause_events[job_id].is_set,
-                on_pause_state=on_pause_state,
-            )
+            try:
+                final_text = self.service.transcribe_prepared(
+                    audio, model=job.model, language=job.language, compute_device=job.compute_device,
+                    on_update=on_update, on_phase=on_phase,
+                    should_cancel=self.cancel_events[job_id].is_set,
+                    should_pause=self.pause_events[job_id].is_set,
+                    on_pause_state=on_pause_state,
+                )
+            except RuntimeError as exc:
+                if job.compute_device != "gpu" or not self.service.is_metal_gpu_error(exc):
+                    raise
+                with self.changed:
+                    job.compute_device = "cpu"
+                    job.device_fallback = True
+                    job.transcription_progress = 0.0
+                    job.progress = 0.0
+                    self.changed.notify_all()
+                final_text = self.service.transcribe_prepared(
+                    audio, model=job.model, language=job.language, compute_device="cpu",
+                    on_update=on_update, on_phase=on_phase,
+                    should_cancel=self.cancel_events[job_id].is_set,
+                    should_pause=self.pause_events[job_id].is_set,
+                    on_pause_state=on_pause_state,
+                )
             if self.cancel_events[job_id].is_set():
                 raise TranscriptionCancelled()
             output_name = None
             if not job.merge_requested:
-                output_name = self._unique_output_name(Path(job.source_name).stem)
+                output_name = self._unique_output_name(transcript_output_stem(
+                    Path(job.source_name).stem,
+                    job.language,
+                    job.use_preprocessing,
+                    job.preprocessing_mode,
+                ))
                 (OUTPUT_DIR / output_name).write_text(final_text.strip() + "\n", encoding="utf-8")
             with self.changed:
                 job.transcript, job.progress, job.output_file, job.status = final_text, 100.0, output_name, "completed"
@@ -355,7 +379,13 @@ class QueueManager:
             if not jobs[0].merge_requested or any(job.status != "completed" for job in jobs):
                 return
             sections = [f"-----------------\nPart {index}\n-----------------\n\n{job.transcript.strip()}" for index, job in enumerate(jobs, 1)]
-            filename = self._unique_output_name(self._merged_output_stem(jobs[0].merge_name), preserve_name=True)
+            first_job = jobs[0]
+            filename = self._unique_output_name(transcript_output_stem(
+                self._merged_output_stem(first_job.merge_name),
+                first_job.language,
+                first_job.use_preprocessing,
+                first_job.preprocessing_mode,
+            ), preserve_name=True)
             (OUTPUT_DIR / filename).write_text("\n\n".join(sections) + "\n", encoding="utf-8")
             self.group_outputs[group_id] = filename
             self.changed.notify_all()
@@ -391,10 +421,10 @@ def create_jobs():
     files = request.files.getlist("files")
     if not files:
         return jsonify({"error": "Select at least one audio file."}), 400
-    model, language = request.form.get("model", "Turbo"), request.form.get("language", "it")
-    mode = request.form.get("preprocessing_mode", "balanced")
+    model, language = request.form.get("model", "Large"), request.form.get("language", "en")
+    mode = request.form.get("preprocessing_mode", "light")
     preprocessing_sample_rate = request.form.get("preprocessing_sample_rate", "source")
-    use_preprocessing = request.form.get("use_preprocessing", "true") == "true"
+    use_preprocessing = request.form.get("use_preprocessing", "false") == "true"
     preprocessing_workers = None
     if use_preprocessing:
         try:

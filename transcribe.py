@@ -6,6 +6,16 @@ import shutil
 import sys
 import re
 
+from output_naming import transcript_output_stem
+
+
+RNNOISE_MODEL_PATH = (
+    Path(__file__).resolve().parent
+    / "assets"
+    / "rnnoise"
+    / "somnolent-hogwash.rnnn"
+)
+
 
 # =========================
 # 📊 HELPER: WHISPER PROGRESS BAR
@@ -61,37 +71,132 @@ def get_audio_duration(input_path: Path):
         raise RuntimeError("❌ Cannot read audio duration (ffprobe failed)")
 
 
+def get_audio_sample_rate(input_path: Path):
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=sample_rate", "-of", "default=nw=1:nk=1",
+        str(input_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    sample_rate = result.stdout.strip()
+    if result.returncode != 0 or not sample_rate.isdigit():
+        raise RuntimeError("❌ Cannot read audio sample rate (ffprobe failed)")
+    return sample_rate
+
+
+def get_audio_channel_count(input_path: Path):
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=channels", "-of", "default=nw=1:nk=1",
+        str(input_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    channels = result.stdout.strip()
+    if result.returncode != 0 or not channels.isdigit():
+        raise RuntimeError("❌ Cannot read audio channel count (ffprobe failed)")
+    return int(channels)
+
+
+def get_best_channel_filter(input_path: Path, analysis_seconds=120):
+    """Select a clearly cleaner stereo channel; otherwise keep the normal downmix."""
+    if get_audio_channel_count(input_path) != 2:
+        return ""
+
+    import numpy as np
+
+    sample_rate = 16000
+    completed = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-t", str(analysis_seconds),
+            "-i", str(input_path), "-vn", "-ac", "2", "-ar", str(sample_rate),
+            "-f", "f32le", "-",
+        ],
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        return ""
+    samples = np.frombuffer(completed.stdout, dtype="<f4")
+    if samples.size < sample_rate or samples.size % 2:
+        return ""
+    samples = samples.reshape(-1, 2)
+    frame, hop = int(0.2 * sample_rate), int(0.1 * sample_rate)
+
+    def channel_quality(channel):
+        count = 1 + (len(channel) - frame) // hop
+        windows = np.lib.stride_tricks.as_strided(
+            channel,
+            shape=(count, frame),
+            strides=(channel.strides[0] * hop, channel.strides[0]),
+        )
+        levels = 20 * np.log10(np.sqrt(np.mean(windows.astype(np.float64) ** 2, axis=1)) + 1e-12)
+        noise = float(np.median(levels[levels <= np.percentile(levels, 20)]))
+        speech = float(np.median(levels[levels >= np.percentile(levels, 60)]))
+        return speech - noise + 0.25 * speech
+
+    qualities = [channel_quality(samples[:, index]) for index in range(2)]
+    if abs(qualities[0] - qualities[1]) < 0.5:
+        return ""
+    return f"pan=mono|c0=c{int(np.argmax(qualities))}"
+
+
 # =========================
 # 🎛️ AUDIO FILTERS
 # =========================
 def get_filter_chain(mode="balanced"):
     if mode == "light":
-        return "highpass=f=80,adeclick,adeclip,afftdn=nf=-20,treble=g=1,loudnorm"
+        # Preserve the voice and only remove low-frequency rumble.  This is a
+        # safe default for recordings that are already reasonably clear.
+        return "highpass=f=70,loudnorm=I=-18:LRA=11:TP=-1.5"
 
     elif mode == "balanced":
-        # Balanced: removed digital imperfections, moderate denoise, compression and high-frequency air
-        return "highpass=f=100,adeclick,adeclip,afftdn=nf=-25,compand=attacks=0.3 0.3:decays=0.8 0.8:points=-70/-60|-20/-14:soft-knee=6,equalizer=f=3000:width_type=h:width=200:g=3,treble=g=2,loudnorm"
+        # Conservative adaptive cleanup. Smooth gain changes preserve speech
+        # consonants while removing more stationary hiss than the light mode.
+        return ("highpass=f=80,lowpass=f=10000,"
+                "afftdn=nr=10:nf=-42:tn=1:ad=0.85:gs=12,"
+                "loudnorm=I=-18:LRA=9:TP=-1.5")
 
     elif mode == "aggressive":
-        # Deep cleaning: removed imperfections, strong denoise but with more air to avoid sounding muffled
-        return "highpass=f=100,adeclick,adeclip,afftdn=nf=-35,compand=attacks=0.3 0.3:decays=0.8 0.8:points=-70/-60|-20/-14:soft-knee=6,treble=g=3,loudnorm"
+        # RNNoise operates at 48 kHz and is trained to separate speech from
+        # recording noise. Keep it opt-in because strong neural denoising can
+        # alter voices when the source is already clean.
+        if not RNNOISE_MODEL_PATH.is_file():
+            raise RuntimeError(f"RNNoise model not found: {RNNOISE_MODEL_PATH}")
+        model_path = RNNOISE_MODEL_PATH.as_posix().replace("'", r"\'")
+        return ("aresample=48000,highpass=f=95,lowpass=f=9000,"
+                f"arnndn=m='{model_path}':mix=0.75,"
+                "afftdn=nr=16:nf=-43:tn=1:ad=0.95:gs=16,"
+                "loudnorm=I=-18:LRA=7:TP=-1.5")
 
     else:
         raise ValueError("mode must be 'light', 'balanced' or 'aggressive'")
 
 
+def get_preprocessing_filter_chain(input_path: Path, mode="balanced"):
+    filters = []
+    if mode in {"balanced", "aggressive"}:
+        channel_filter = get_best_channel_filter(input_path)
+        if channel_filter:
+            filters.append(channel_filter)
+    filters.append(get_filter_chain(mode))
+    return ",".join(filters)
+
+
 # =========================
-# 🔊 PREPROCESSING → MP4 (ROBUST)
+# 🔊 PREPROCESSING → LOSSLESS FLAC
 # =========================
 def preprocess_audio(input_path, output_dir, mode="light"):
     input_path = Path(input_path).resolve()
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_path = output_dir / f"{input_path.stem}_{mode}.mp4"
+    output_path = output_dir / f"{input_path.stem}_{mode}.flac"
 
     duration = get_audio_duration(input_path)
-    filter_chain = get_filter_chain(mode)
+    sample_rate = get_audio_sample_rate(input_path)
+    filter_chain = (
+        f"{get_preprocessing_filter_chain(input_path, mode)},aresample={sample_rate},"
+        f"aformat=sample_fmts=s16:sample_rates={sample_rate},asetnsamples=n=4096:p=0"
+    )
 
     cmd = [
         "ffmpeg",
@@ -101,14 +206,14 @@ def preprocess_audio(input_path, output_dir, mode="light"):
         # audio only
         "-vn",
         "-ac", "1",
-        "-ar", "16000",
+        "-ar", sample_rate,
 
         # filters
         "-af", filter_chain,
 
-        # 🔥 MP4 AUDIO SAFE
-        "-c:a", "aac",
-        "-b:a", "128k",
+        # Keep the preprocessing generation lossless.
+        "-c:a", "flac",
+        "-compression_level", "5",
 
         str(output_path)
     ]
@@ -168,7 +273,8 @@ def transcribe_mlx(
     preprocessing_mode="balanced",
     language="en",
     keep_processed_audio=True,
-    processed_dir=None
+    processed_dir=None,
+    initial_prompt=None,
 ):
     # Path to the script's directory
     base_dir = Path(__file__).parent.resolve()
@@ -217,12 +323,13 @@ def transcribe_mlx(
             verbose=False,
             language=language,
             temperature=0.0,
-            condition_on_previous_text=False,
+            condition_on_previous_text=True,
+            initial_prompt=initial_prompt,
         )
 
     text = result["text"]
 
-    output_file = output_dir / f"{file_path.stem}_{preprocessing_mode}.txt"
+    output_file = output_dir / f"{transcript_output_stem(file_path.stem, language, use_preprocessing, preprocessing_mode)}.txt"
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(text)
@@ -238,6 +345,8 @@ def transcribe_mlx(
             print(f"🗑️ Deleted: {audio_to_use}")
         except:
             pass
+
+    return output_file
 
 
 # =========================

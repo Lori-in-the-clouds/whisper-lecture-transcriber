@@ -15,7 +15,7 @@ A powerful, standalone web application designed to turn **hours of lecture recor
 ## ✨ Features
 
 - **Blazing Fast**: Hardware-accelerated transcription using advanced AI frameworks.
-- **Smart Audio Preprocessing**: Built-in FFmpeg filters to clean up noisy classroom recordings, fix clipping, and enhance voice clarity.
+- **Optional Audio Preprocessing**: Conservative FFmpeg profiles for noisy classroom recordings, saved as lossless FLAC without an extra AAC generation.
 - **Parallel Preprocessing**: Choose 1–4 FFmpeg workers to prepare multiple queued recordings at the same time while keeping MLX transcription ordered and single-threaded.
 - **Drag & Drop Queue**: Queue multiple recordings, reorder them on the fly, and pause/resume transcriptions anytime.
 - **Merge Transcripts**: Seamlessly group multiple audio parts together and export them into a single, structured text file.
@@ -53,10 +53,10 @@ Setting up Transcribo is fully automated. You don't need to manually configure e
 
 1. **Add Files**: Drag and drop your audio files (`.m4a`, `.mp3`, `.wav`, `.mp4`, etc.) into the sidebar on the right.
 2. **Choose Settings**:
-   - **Model**: `Turbo` (Faster) or `Large` (More accurate). *Note: The first time you use a new model, it may take a few minutes to download its weights.*
+   - **Model**: `Large` (more accurate and the default) or `Turbo` (faster). *Note: The first time you use a new model, it may take a few minutes to download its weights.*
    - **Language**: Auto-detect or force a specific language (e.g., Italian).
-   - **Preprocessing**: `Light`, `Balanced` (Recommended), or `Strong` depending on the background noise of the original recording.
-   - **Filter sample rate**: `Original` preserves the previous behavior, `32 kHz` is a compromise, and `16 kHz` is fastest for Whisper. The final transcription audio is always mono 16 kHz.
+   - **Preprocessing**: Leave it off for clear recordings. For noisy material, start with `Light`, then compare `Balanced` or `Strong` only when needed.
+   - **Processed audio rate**: `Original` preserves the source bandwidth and is the default; `32 kHz` and `16 kHz` trade saved-audio quality for smaller files. Temporary Whisper chunks are always lossless mono 16 kHz.
    - **Preprocessing workers**: Choose how many recordings FFmpeg may preprocess simultaneously. Start with `2`; higher values use more CPU and disk bandwidth.
    - **Merge Transcripts**: If your lecture is split across multiple files, check this box. They will be processed as a group and exported as a single merged document.
 3. **Manage the Queue**: 
@@ -78,5 +78,5 @@ Setting up Transcribo is fully automated. You don't need to manually configure e
 
 All your outputs are neatly organized inside the `data/` folder (created automatically on first run):
 - `data/transcriptions/`: Contains your final `.txt` transcripts.
-- `data/processed_audio/`: Contains the cleaned, enhanced audio copies (if you enabled "Keep processed audio").
+- `data/processed_audio/`: Contains lossless FLAC cleaned-audio copies (if you enabled "Keep processed audio").
 - `data/uploads/`: Temporary folder for queued files.

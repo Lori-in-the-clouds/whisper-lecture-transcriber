@@ -1,4 +1,6 @@
 -r requirements.txt
+mlx==0.31.2
+mlx-metal==0.31.2
 Flask==3.1.2
 gunicorn==23.0.0
 requests==2.32.5

@@ -8,4 +8,6 @@ echo "Transcribo is available at http://localhost:7860"
 echo "Keep this terminal open. Press Ctrl+C to stop."
 export TRANSCRIBER_DATA_DIR="$SCRIPT_DIR/data"
 export TRANSCRIPTION_ENGINE=mlx
-exec .venv/bin/gunicorn --bind 127.0.0.1:7860 --workers 1 --threads 4 --timeout 0 app:app
+# MLX/Metal relies on macOS XPC services that are not reliable after Gunicorn's
+# worker fork. Run the local app in one native Python process instead.
+exec .venv/bin/python app.py

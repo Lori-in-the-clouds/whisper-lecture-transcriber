@@ -145,11 +145,23 @@ function mergedTranscript(job, jobs) {
     `-----------------\nPart ${index + 1}\n-----------------\n\n${item.transcript || ''}`
   ).join('\n\n');
 }
+
+function transcriptFileName(stem, job) {
+  const language = (job.language || 'en').toLowerCase();
+  const preprocessing = job.use_preprocessing ? job.preprocessing_mode : 'none';
+  return `${stem}_${language}_${preprocessing}.txt`;
+}
+
+function queuedTranscriptFileName(job) {
+  const sourceStem = job.source_name.replace(/\.[^.]+$/, '');
+  return transcriptFileName(sourceStem, job);
+}
+
 function statusText(job) {
   if (job.status === 'failed') return job.error;
   if (job.status === 'preprocessing') return `Preprocessing · ${Math.round(job.preprocessing_progress)}%`;
   if (job.status === 'ready') return 'Ready for transcription';
-  if (job.status === 'transcribing') return `Transcribing · ${Math.round(job.transcription_progress)}%`;
+  if (job.status === 'transcribing') return `${job.device_fallback ? 'GPU unavailable · CPU fallback' : 'Transcribing'} · ${Math.round(job.transcription_progress)}%`;
   if (job.status === 'paused') return job.phase === 'preprocessing' ? `Paused · ${Math.round(job.preprocessing_progress)}%` : `Paused · ${Math.round(job.transcription_progress)}%`;
   return ({ queued: 'Waiting · drag to reorder', pausing: 'Pausing…', stopping: 'Stopping…', completed: 'Completed', cancelled: 'Cancelled' })[job.status];
 }
@@ -304,7 +316,7 @@ function renderState(state) {
       return `
       <div class="queue-item ${job.id === selectedPreviewId ? 'selected' : ''} ${job.merge_requested ? 'merge-group' : ''}" style="${job.merge_requested ? `--group-color:${mergeColor(job.group_id)}` : ''}" data-id="${job.id}" data-group-id="${job.group_id}" data-status="${job.status}" draggable="${job.status === 'queued'}" role="button" tabindex="0">
         <span class="queue-state ${job.status}">${statusIcon(job.status)}</span>
-        <span class="queue-copy"><strong>${escapeHtml(job.source_name)}</strong><small>${job.merge_requested ? '<em>Merge group</em> · ' : ''}${escapeHtml(statusText(job))}</small><i><b style="width:${currentProgress}%"></b></i></span>
+        <span class="queue-copy"><strong>${escapeHtml(queuedTranscriptFileName(job))}</strong><small>${job.merge_requested ? '<em>Merge group</em> · ' : ''}${escapeHtml(statusText(job))}</small><i><b style="width:${currentProgress}%"></b></i></span>
         <span class="queue-actions">${pauseControl(job)}${trashControl(job)}</span>
       </div>`;
     }).join('');
@@ -340,7 +352,9 @@ function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.mer
   document.body.classList.toggle('preview-paused', ['pausing', 'paused'].includes(activeJob?.status));
   document.body.classList.toggle('is-transcribing', activeStatuses.includes(activeJob?.status));
   const mergeTitle = (job.merge_name || 'merged_lectures').replace(/\.txt$/i, '');
-  $('#previewTitle').textContent = isMerge ? `${mergeTitle}.txt` : job.source_name;
+  $('#previewTitle').textContent = isMerge
+    ? transcriptFileName(mergeTitle, job)
+    : queuedTranscriptFileName(job);
   const preprocessing = displayJob.use_preprocessing ? displayJob.preprocessing_progress : 100;
   $('#preprocessingBar').style.width = `${preprocessing}%`;
   $('#preprocessingLabel').textContent = displayJob.use_preprocessing ? `${Math.round(preprocessing)}%` : 'Skipped';
