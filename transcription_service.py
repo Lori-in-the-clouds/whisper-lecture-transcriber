@@ -258,13 +258,18 @@ class TranscriptionService:
                 completed = subprocess.run(command, capture_output=True, text=True)
                 if completed.returncode != 0:
                     raise RuntimeError(f"Unable to create audio chunk: {completed.stderr.strip()}")
-                context = transcript[-500:].strip() or None
-                transcript_file = legacy.transcribe_mlx(
-                    chunk, output_dir=output_dir, model=model, use_preprocessing=False,
-                    preprocessing_mode="balanced", language=None if language == "auto" else language,
-                    keep_processed_audio=False, processed_dir=temp / "processed",
-                    initial_prompt=context,
-                )
+                # Each chunk must stand on its own: feeding generated text back
+                # as a prompt can propagate a hallucination through the lecture.
+                try:
+                    transcript_file = legacy.transcribe_mlx(
+                        chunk, output_dir=output_dir, model=model, use_preprocessing=False,
+                        preprocessing_mode="balanced", language=None if language == "auto" else language,
+                        keep_processed_audio=False, processed_dir=temp / "processed",
+                    )
+                except legacy.RepetitiveTranscriptionError as exc:
+                    raise legacy.RepetitiveTranscriptionError(
+                        f"Intervallo audio {start:.1f}–{start + length:.1f} s: {exc}"
+                    ) from exc
                 if should_cancel():
                     raise TranscriptionCancelled()
                 text = Path(transcript_file).read_text(encoding="utf-8").strip()

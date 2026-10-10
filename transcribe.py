@@ -17,6 +17,25 @@ RNNOISE_MODEL_PATH = (
 )
 
 
+class RepetitiveTranscriptionError(RuntimeError):
+    """Whisper still produced a repetition loop after decoding fallbacks."""
+
+
+def has_repetition_loop(text):
+    """Detect extreme consecutive repeats without removing ordinary speech."""
+    words = re.findall(r"\w+", text.casefold())
+    for size in range(1, min(12, len(words) // 8) + 1):
+        run = 0
+        for index in range(size, len(words)):
+            if words[index] == words[index - size]:
+                run += 1
+                if run >= max(7 * size, 24 - size):
+                    return True
+            else:
+                run = 0
+    return False
+
+
 # =========================
 # 📊 HELPER: WHISPER PROGRESS BAR
 # =========================
@@ -322,12 +341,23 @@ def transcribe_mlx(
             path_or_hf_repo=model_name,
             verbose=False,
             language=language,
-            temperature=0.0,
-            condition_on_previous_text=True,
+            # Retry repetitive/low-confidence windows using Whisper's built-in
+            # fallback. A single temperature disables those retries entirely.
+            temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+            compression_ratio_threshold=2.4,
+            logprob_threshold=-1.0,
+            no_speech_threshold=0.6,
+            condition_on_previous_text=False,
             initial_prompt=initial_prompt,
         )
 
     text = result["text"]
+    if has_repetition_loop(text):
+        raise RepetitiveTranscriptionError(
+            "Whisper ha prodotto ripetizioni anomale anche dopo i tentativi automatici. "
+            "Controlla l'audio in questo punto e riprova con la lingua corretta "
+            "o con un diverso livello di pulizia audio."
+        )
 
     output_file = output_dir / f"{transcript_output_stem(file_path.stem, language, use_preprocessing, preprocessing_mode)}.txt"
 
