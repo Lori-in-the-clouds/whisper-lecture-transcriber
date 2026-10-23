@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import platform
 import re
@@ -39,6 +40,7 @@ def _load_legacy_module():
 
 
 legacy = _load_legacy_module()
+logger = logging.getLogger(__name__)
 
 
 class TranscriptionService:
@@ -244,35 +246,59 @@ class TranscriptionService:
             output_dir, transcript = temp / "text", ""
             chunk_duration, overlap = 30.0, 1.5
             stride, start, index = chunk_duration - overlap, 0.0, 0
-            while start < duration:
+
+            def checkpoint() -> None:
                 self._wait_while_paused(should_pause, should_cancel, on_pause_state)
                 if should_cancel():
                     raise TranscriptionCancelled()
-                chunk = temp / f"chunk_{index:04d}.wav"
-                length = min(chunk_duration, duration - start)
+
+            def decode_interval(offset: float, length: float, depth: int = 0) -> str:
+                checkpoint()
+                chunk = temp / f"chunk_{index:04d}_{offset:.6f}_{depth}.wav"
                 command = [
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-ss", f"{start:.3f}", "-i", str(audio), "-t", f"{length:.3f}",
+                    "-ss", f"{offset:.6f}", "-i", str(audio), "-t", f"{length:.6f}",
                     "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(chunk),
                 ]
                 completed = subprocess.run(command, capture_output=True, text=True)
                 if completed.returncode != 0:
                     raise RuntimeError(f"Unable to create audio chunk: {completed.stderr.strip()}")
-                # Each chunk must stand on its own: feeding generated text back
-                # as a prompt can propagate a hallucination through the lecture.
                 try:
-                    transcript_file = legacy.transcribe_mlx(
-                        chunk, output_dir=output_dir, model=model, use_preprocessing=False,
-                        preprocessing_mode="balanced", language=None if language == "auto" else language,
-                        keep_processed_audio=False, processed_dir=temp / "processed",
-                    )
-                except legacy.RepetitiveTranscriptionError as exc:
-                    raise legacy.RepetitiveTranscriptionError(
-                        f"Intervallo audio {start:.1f}–{start + length:.1f} s: {exc}"
-                    ) from exc
-                if should_cancel():
-                    raise TranscriptionCancelled()
-                text = Path(transcript_file).read_text(encoding="utf-8").strip()
+                    # Each pass includes Whisper's fallback ladder. The second
+                    # starts with sampling so it does not repeat greedy decoding.
+                    for temperatures in ((0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+                                         (0.2, 0.4, 0.6, 0.8, 1.0)):
+                        checkpoint()
+                        try:
+                            transcript_file = legacy.transcribe_mlx(
+                                chunk, output_dir=output_dir, model=model, use_preprocessing=False,
+                                preprocessing_mode="balanced", language=None if language == "auto" else language,
+                                keep_processed_audio=False, processed_dir=temp / "processed",
+                                temperature=temperatures,
+                            )
+                        except legacy.RepetitiveTranscriptionError:
+                            logger.warning("Repetition in audio interval %.2f–%.2f s (temperatures %s)",
+                                           offset, offset + length, temperatures)
+                            continue
+                        checkpoint()
+                        return Path(transcript_file).read_text(encoding="utf-8").strip()
+                    checkpoint()
+                    # Recover smaller portions before giving up: 30 -> 15 -> 7.5 s.
+                    # Do not merge overlaps here: these halves are contiguous.
+                    if length > 7.5:
+                        half = length / 2
+                        left = decode_interval(offset, half, depth + 1)
+                        right = decode_interval(offset + half, length - half, depth + 1)
+                        return " ".join(part for part in (left, right) if part)
+                    logger.warning("Audio interval %.2f–%.2f s skipped after all recovery attempts", offset, offset + length)
+                    return (f"[UNTRANSCRIBED AUDIO {offset:.2f}–{offset + length:.2f} s: "
+                            "persistent repetition after all recovery attempts]")
+                finally:
+                    chunk.unlink(missing_ok=True)
+
+            while start < duration:
+                length = min(chunk_duration, duration - start)
+                text = decode_interval(start, length)
                 if text:
                     transcript = self._merge_overlapping_text(transcript, text)
                 elapsed = min(duration, start + length)

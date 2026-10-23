@@ -77,6 +77,78 @@ body.is-transcribing .phase-row i::after { opacity: 1; animation: progress-sheen
   width: 100%;
 }
 .transcript-text::selection { background: rgba(0, 102, 204, .2); }
+.live-stage { position: relative; }
+.live-stage.has-parts { padding-right: max(96px, clamp(36px, 7vw, 100px)); }
+.transcript-part { white-space: normal; }
+.transcript-part:last-child { min-height: 100%; }
+.transcript-part + .transcript-part { margin-top: 48px; }
+.transcript-part h2 {
+  margin: 0 0 18px;
+  color: #aaaab0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.transcript-part-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.transcript-part-body:empty::before {
+  content: "The transcript for this part will appear here.";
+  color: #86868b;
+  font-size: 13px;
+}
+.part-navigator {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: 16px;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  padding: 8px 4px;
+  border-radius: 12px;
+}
+.part-navigator button {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 30px;
+  padding: 0 8px 0 32px;
+  border: 0;
+  border-radius: 6px;
+  color: #aaaab0;
+  background: transparent;
+  cursor: pointer;
+}
+.part-line {
+  display: block;
+  width: 24px;
+  height: 3px;
+  flex: none;
+  border-radius: 99px;
+  background: #656569;
+  transform-origin: right center;
+  transition: transform .18s, background .18s, box-shadow .18s;
+}
+.part-navigator button.active { color: #f5f5f7; }
+.part-navigator button.active .part-line { background: #f5f5f7; box-shadow: 0 0 7px #ffffff70; }
+.part-navigator:has(button:hover) button.active:not(:hover) .part-line,
+.part-navigator:has(button:focus-visible) button.active:not(:focus-visible):not(:hover) .part-line {
+  background: #656569;
+  box-shadow: none;
+}
+.part-navigator button:hover:not(:disabled) .part-line,
+.part-navigator button:focus-visible:not(:disabled) .part-line {
+  transform: scale(2.2, 2.8);
+  background: #f5f5f7;
+}
+.part-navigator button.is-pending:not(.active):not(:hover):not(:focus-visible) .part-line { opacity: .5; }
+.part-navigator button.has-error .part-line { background: #ff6961; }
+.part-navigator button:focus-visible { outline-offset: -2px; }
 body:not(.is-transcribing) .transcript-text::after { animation-play-state: paused; opacity: 0; }
 
 .control-drawer {

@@ -140,10 +140,119 @@ function mergeColor(groupId) {
   return groupColors.get(groupId);
 }
 
-function mergedTranscript(job, jobs) {
-  return jobs.filter((item) => item.group_id === job.group_id).map((item, index) =>
-    `-----------------\nPart ${index + 1}\n-----------------\n\n${item.transcript || ''}`
-  ).join('\n\n');
+const transcriptArticle = $('#transcriptText');
+const partNavigator = $('#partNavigator');
+let previewKey = null;
+let partScrollFrame = null;
+let navigationPartId = null;
+
+function updateActivePart() {
+  const sections = [...transcriptArticle.querySelectorAll('.transcript-part')];
+  const buttons = [...partNavigator.querySelectorAll('button')];
+  if (!buttons.length) return;
+  const readingLine = transcriptArticle.getBoundingClientRect().top + 40;
+  const available = sections.filter((_, index) => !buttons[index].disabled);
+  let current = available[0];
+  for (const section of available) {
+    if (section.getBoundingClientRect().top <= readingLine) current = section;
+  }
+  if (transcriptArticle.scrollHeight > transcriptArticle.clientHeight &&
+      transcriptArticle.scrollTop + transcriptArticle.clientHeight >= transcriptArticle.scrollHeight - 2) {
+    current = available.at(-1);
+  }
+  buttons.forEach((button, index) => {
+    const active = sections[index] === current;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'location');
+    else button.removeAttribute('aria-current');
+  });
+}
+
+function scheduleActivePart() {
+  if (partScrollFrame !== null) return;
+  partScrollFrame = requestAnimationFrame(() => {
+    partScrollFrame = null;
+    updateActivePart();
+  });
+}
+transcriptArticle.addEventListener('scroll', scheduleActivePart, { passive: true });
+// Keep an explicitly opened part in view as earlier parts receive live text.
+['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach((type) => {
+  transcriptArticle.addEventListener(type, () => { navigationPartId = null; }, { passive: true });
+});
+new ResizeObserver(scheduleActivePart).observe(transcriptArticle);
+
+partNavigator.addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button || button.disabled) return;
+  const section = document.getElementById(button.getAttribute('aria-controls'));
+  if (!section) return;
+  navigationPartId = section.id;
+  transcriptArticle.scrollTo({
+    top: transcriptArticle.scrollTop + section.getBoundingClientRect().top - transcriptArticle.getBoundingClientRect().top,
+    behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+  });
+});
+
+function renderTranscript(job, jobs) {
+  const parts = job?.merge_requested ? jobs.filter((item) => item.group_id === job.group_id) : [];
+  const key = job ? (job.merge_requested ? `group:${job.group_id}` : `job:${job.id}`) : null;
+  const changed = key !== previewKey;
+  const anchor = !changed && navigationPartId ? document.getElementById(navigationPartId) : null;
+  const anchorTop = anchor?.getBoundingClientRect().top;
+  const followEnd = !changed && !anchor && transcriptArticle.scrollHeight - transcriptArticle.scrollTop - transcriptArticle.clientHeight < 48;
+  if (changed || !job) {
+    navigationPartId = null;
+    transcriptArticle.replaceChildren();
+    partNavigator.replaceChildren();
+    previewKey = key;
+  }
+  if (parts.length) {
+    const signature = JSON.stringify(parts.map((part) => part.id));
+    if (transcriptArticle.dataset.parts !== signature || changed) {
+      transcriptArticle.replaceChildren();
+      partNavigator.replaceChildren();
+      parts.forEach((part, index) => {
+        const section = document.createElement('section');
+        section.className = 'transcript-part';
+        section.id = `transcript-part-${part.id}`;
+        const heading = document.createElement('h2');
+        heading.textContent = `Part ${index + 1}`;
+        const body = document.createElement('div');
+        body.className = 'transcript-part-body';
+        section.append(heading, body);
+        transcriptArticle.append(section);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('aria-label', `Part ${index + 1}`);
+        button.setAttribute('aria-controls', section.id);
+        button.innerHTML = '<span class="part-line" aria-hidden="true"></span>';
+        partNavigator.append(button);
+      });
+      transcriptArticle.dataset.parts = signature;
+    }
+    parts.forEach((part, index) => {
+      const body = transcriptArticle.children[index].querySelector('.transcript-part-body');
+      const text = part.transcript || '';
+      if (body.textContent !== text) body.textContent = text;
+      const button = partNavigator.children[index];
+      button.classList.toggle('is-pending', !text.trim());
+      button.classList.toggle('has-error', part.status === 'failed');
+    });
+  } else {
+    delete transcriptArticle.dataset.parts;
+    const text = job?.transcript || '';
+    if (transcriptArticle.textContent !== text) transcriptArticle.textContent = text;
+  }
+  const hasText = parts.length > 0 || Boolean(job?.transcript);
+  $('#emptyPreview').classList.toggle('is-hidden', hasText);
+  transcriptArticle.classList.toggle('is-hidden', !hasText);
+  partNavigator.classList.toggle('is-hidden', !parts.length);
+  $('.live-stage').classList.toggle('has-parts', parts.length > 0);
+  if (changed) transcriptArticle.scrollTop = 0;
+  else if (anchor?.isConnected) transcriptArticle.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+  else if (followEnd) transcriptArticle.scrollTop = transcriptArticle.scrollHeight;
+  scheduleActivePart();
 }
 
 function transcriptFileName(stem, job) {
@@ -339,9 +448,7 @@ function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.mer
     $('#preprocessingLabel').textContent = '0%';
     $('#transcriptionBar').style.width = '0%';
     $('#transcriptionLabel').textContent = '0%';
-    $('#transcriptText').textContent = '';
-    $('#transcriptText').classList.add('is-hidden');
-    $('#emptyPreview').classList.remove('is-hidden');
+    renderTranscript(null, jobs);
     $('#downloadCurrent').classList.add('is-hidden');
     return;
   }
@@ -360,14 +467,7 @@ function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.mer
   $('#preprocessingLabel').textContent = displayJob.use_preprocessing ? `${Math.round(preprocessing)}%` : 'Skipped';
   $('#transcriptionBar').style.width = `${displayJob.transcription_progress}%`;
   $('#transcriptionLabel').textContent = `${Math.round(displayJob.transcription_progress)}%`;
-  const previewText = isMerge ? mergedTranscript(job, jobs) : job.transcript;
-  const hasText = Boolean(previewText);
-  $('#emptyPreview').classList.toggle('is-hidden', hasText);
-  $('#transcriptText').classList.toggle('is-hidden', !hasText);
-  if (hasText) {
-    $('#transcriptText').textContent = previewText;
-    $('#transcriptText').scrollTop = $('#transcriptText').scrollHeight;
-  }
+  renderTranscript(job, jobs);
   stop.classList.toggle('is-hidden', !activeJob || ![...runningStatuses, 'pausing', 'paused', 'stopping'].includes(activeJob.status));
   stop.disabled = activeJob?.status === 'stopping';
   stop.textContent = activeJob?.status === 'stopping' ? 'Stopping…' : (activeJob?.phase === 'preprocessing' ? 'Stop preprocessing' : 'Stop transcription');

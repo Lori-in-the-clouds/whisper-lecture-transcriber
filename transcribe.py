@@ -294,6 +294,7 @@ def transcribe_mlx(
     keep_processed_audio=True,
     processed_dir=None,
     initial_prompt=None,
+    temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
 ):
     # Path to the script's directory
     base_dir = Path(__file__).parent.resolve()
@@ -343,7 +344,7 @@ def transcribe_mlx(
             language=language,
             # Retry repetitive/low-confidence windows using Whisper's built-in
             # fallback. A single temperature disables those retries entirely.
-            temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+            temperature=temperature,
             compression_ratio_threshold=2.4,
             logprob_threshold=-1.0,
             no_speech_threshold=0.6,
@@ -354,9 +355,9 @@ def transcribe_mlx(
     text = result["text"]
     if has_repetition_loop(text):
         raise RepetitiveTranscriptionError(
-            "Whisper ha prodotto ripetizioni anomale anche dopo i tentativi automatici. "
-            "Controlla l'audio in questo punto e riprova con la lingua corretta "
-            "o con un diverso livello di pulizia audio."
+            "Whisper produced abnormal repetition even after automatic retries. "
+            "Check the audio at this point and try again with the correct language "
+            "or a different audio preprocessing level."
         )
 
     output_file = output_dir / f"{transcript_output_stem(file_path.stem, language, use_preprocessing, preprocessing_mode)}.txt"

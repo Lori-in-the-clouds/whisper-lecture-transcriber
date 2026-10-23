@@ -65,6 +65,8 @@ Setting up Transcribo is fully automated. You don't need to manually configure e
    - If you grouped files to merge, dragging them outside the group will move the entire block together! You can also drag files *inside* the block to fix the order (e.g., swap Part 1 and Part 2).
 4. **Download**: Once finished, you can read the live text directly in the browser and download the `.txt` file using the download button.
 
+If Whisper produces persistent repetition, the app retries the affected 30-second chunk with two decoding passes, each using its temperature fallback ladder. If both fail, it retries smaller portions (15 seconds, then 7.5 seconds), with the same two passes per portion. Only a portion that still fails at the smallest size is skipped; its time interval is marked as `[UNTRANSCRIBED AUDIO …]` in the transcript, and transcription continues through the rest of the recording. Other processing errors still report a failure.
+
 
 
 <p align="center">
