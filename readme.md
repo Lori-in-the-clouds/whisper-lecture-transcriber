@@ -19,6 +19,7 @@ A powerful, standalone web application designed to turn **hours of lecture recor
 - **Parallel Preprocessing**: Choose 1–4 FFmpeg workers to prepare multiple queued recordings at the same time while keeping MLX transcription ordered and single-threaded.
 - **Drag & Drop Queue**: Queue multiple recordings, reorder them on the fly, and pause/resume transcriptions anytime.
 - **Merge Transcripts**: Seamlessly group multiple audio parts together and export them into a single, structured text file.
+- **Output Formats**: Choose plain text (`.txt`), Markdown (`.md`), or a standalone, print-friendly HTML document (`.html`) from the Download menu after transcription finishes. Download the same result in multiple formats without transcribing again. Merged Markdown and HTML exports use level-one Part headings.
 - **Privacy First**: Everything runs 100% locally on your machine. No internet connection required, no data sent to the cloud.
 
 ---
@@ -63,7 +64,7 @@ Setting up Transcribo is fully automated. You don't need to manually configure e
    - Click **"Add to queue"** to send them to the processing queue.
    - You can drag files up and down in the queue to change their priority. 
    - If you grouped files to merge, dragging them outside the group will move the entire block together! You can also drag files *inside* the block to fix the order (e.g., swap Part 1 and Part 2).
-4. **Download**: Once finished, you can read the live text directly in the browser and download the `.txt` file using the download button.
+4. **Download**: Once finished, open **Download ▾** and choose **Plain text**, **Markdown**, or **HTML**. The menu is available above the preview and in **Ready files**, the compact list below the queue containing completed single and merged transcripts. Each row shows the file name and a Download menu on the right. You can download several formats from the same transcript. Queue icons distinguish waiting, audio preprocessing, ready, transcribing, paused, and failed items.
 
 If Whisper produces persistent repetition, the app retries the affected 30-second chunk with two decoding passes, each using its temperature fallback ladder. If both fail, it retries smaller portions (15 seconds, then 7.5 seconds), with the same two passes per portion. Only a portion that still fails at the smallest size is skipped; its time interval is marked as `[UNTRANSCRIBED AUDIO …]` in the transcript, and transcription continues through the rest of the recording. Other processing errors still report a failure.
 
@@ -79,6 +80,6 @@ If Whisper produces persistent repetition, the app retries the affected 30-secon
 ## 📁 Where are my files?
 
 All your outputs are neatly organized inside the `data/` folder (created automatically on first run):
-- `data/transcriptions/`: Contains your final `.txt` transcripts.
+- `data/transcriptions/`: Contains a saved `.txt` copy of each completed transcript. Structured text in its `.sources/` subfolder preserves the parts for later Markdown and HTML downloads; keep this subfolder with the TXT files. Downloaded formats go to your browser's download folder.
 - `data/processed_audio/`: Contains lossless FLAC cleaned-audio copies (if you enabled "Keep processed audio").
 - `data/uploads/`: Temporary folder for queued files.

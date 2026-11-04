@@ -91,7 +91,12 @@ function syncPreprocessControls() {
 }
 $('#usePreprocessing').onchange = syncPreprocessControls;
 syncPreprocessControls();
-mergeFiles.onchange = () => $('#mergeNameWrap').classList.toggle('is-hidden', !mergeFiles.checked);
+function syncMergeControls() {
+  $('#mergeNameWrap').classList.toggle('is-hidden', !mergeFiles.checked);
+}
+mergeFiles.addEventListener('change', syncMergeControls);
+window.addEventListener('pageshow', syncMergeControls);
+syncMergeControls();
 
 startButton.onclick = async () => {
   const chosen = staged.filter((item) => item.selected);
@@ -126,7 +131,19 @@ startButton.onclick = async () => {
 
 const activeStatuses = ['preprocessing', 'ready', 'transcribing', 'pausing', 'paused', 'stopping'];
 const runningStatuses = ['preprocessing', 'transcribing'];
-const statusIcon = (status) => ({ queued: '⠿', preprocessing: '◌', ready: '✓', transcribing: '◌', pausing: 'Ⅱ', paused: 'Ⅱ', stopping: '◌', completed: '✓', failed: '!', cancelled: '×' })[status];
+const statusPaths = {
+  queued: '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>',
+  preprocessing: '<path d="m10 3-.5 2-2 .9-1.8-.6-2 3.4 1.4 1.4v2.8L3.7 14l2 3.4 1.8-.6 2 .9.5 2h4l.5-2 2-.9 1.8.6 2-3.4-1.4-1.1v-2.8l1.4-1.4-2-3.4-1.8.6-2-.9L14 3Z"/><circle cx="12" cy="11.5" r="3"/>',
+  ready: '<path d="M13 3H5v18h14v-9M13 3v6h6M13 3l6 6M8 15h7m-3-3 3 3-3 3"/>',
+  transcribing: '<path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4"/>',
+  pausing: '<path d="M8 5v14M16 5v14"/>',
+  paused: '<path d="M8 5v14M16 5v14"/>',
+  stopping: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  completed: '<path d="m6 12 4 4 8-8"/>',
+  failed: '<path d="M12 7v6m0 4h.01"/><path d="m12 3 10 18H2Z"/>',
+  cancelled: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+};
+const statusIcon = (status) => `<svg viewBox="0 0 24 24" aria-hidden="true">${statusPaths[status] || statusPaths.queued}</svg>`;
 const mergePalette = ['#007aff', '#af52de', '#ff9500', '#34c759', '#ff2d55', '#5ac8fa'];
 const groupColors = new Map();
 let nextColorIndex = 0;
@@ -145,6 +162,50 @@ const partNavigator = $('#partNavigator');
 let previewKey = null;
 let partScrollFrame = null;
 let navigationPartId = null;
+let navigationFrame = null;
+
+function cancelPartNavigation() {
+  if (navigationFrame !== null) cancelAnimationFrame(navigationFrame);
+  navigationFrame = null;
+  navigationPartId = null;
+}
+
+function partScrollTop(section) {
+  const top = transcriptArticle.scrollTop + section.getBoundingClientRect().top
+    - transcriptArticle.getBoundingClientRect().top - transcriptArticle.clientTop;
+  return Math.max(0, Math.min(top, transcriptArticle.scrollHeight - transcriptArticle.clientHeight));
+}
+
+function alignNavigationPart() {
+  const section = navigationPartId && document.getElementById(navigationPartId);
+  if (!section) return;
+  const top = partScrollTop(section);
+  if (Math.abs(top - transcriptArticle.scrollTop) > .5) {
+    transcriptArticle.scrollTo({ top, behavior: 'instant' });
+  }
+}
+
+function navigateToPart(section) {
+  cancelPartNavigation();
+  navigationPartId = section.id;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    alignNavigationPart();
+    scheduleActivePart();
+    return;
+  }
+  const from = transcriptArticle.scrollTop;
+  const started = performance.now();
+  const animate = (now) => {
+    if (!section.isConnected) { cancelPartNavigation(); return; }
+    const progress = Math.min(1, (now - started) / 320);
+    const eased = 1 - (1 - progress) ** 3;
+    // Recalculate the destination as live text changes the earlier parts' height.
+    transcriptArticle.scrollTo({ top: from + (partScrollTop(section) - from) * eased, behavior: 'instant' });
+    scheduleActivePart();
+    navigationFrame = progress < 1 ? requestAnimationFrame(animate) : null;
+  };
+  navigationFrame = requestAnimationFrame(animate);
+}
 
 function updateActivePart() {
   const sections = [...transcriptArticle.querySelectorAll('.transcript-part')];
@@ -178,20 +239,19 @@ function scheduleActivePart() {
 transcriptArticle.addEventListener('scroll', scheduleActivePart, { passive: true });
 // Keep an explicitly opened part in view as earlier parts receive live text.
 ['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach((type) => {
-  transcriptArticle.addEventListener(type, () => { navigationPartId = null; }, { passive: true });
+  transcriptArticle.addEventListener(type, cancelPartNavigation, { passive: true });
 });
-new ResizeObserver(scheduleActivePart).observe(transcriptArticle);
+new ResizeObserver(() => {
+  if (navigationFrame === null) alignNavigationPart();
+  scheduleActivePart();
+}).observe(transcriptArticle);
 
 partNavigator.addEventListener('click', (event) => {
   const button = event.target.closest('button');
   if (!button || button.disabled) return;
   const section = document.getElementById(button.getAttribute('aria-controls'));
   if (!section) return;
-  navigationPartId = section.id;
-  transcriptArticle.scrollTo({
-    top: transcriptArticle.scrollTop + section.getBoundingClientRect().top - transcriptArticle.getBoundingClientRect().top,
-    behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
-  });
+  navigateToPart(section);
 });
 
 function renderTranscript(job, jobs) {
@@ -199,10 +259,9 @@ function renderTranscript(job, jobs) {
   const key = job ? (job.merge_requested ? `group:${job.group_id}` : `job:${job.id}`) : null;
   const changed = key !== previewKey;
   const anchor = !changed && navigationPartId ? document.getElementById(navigationPartId) : null;
-  const anchorTop = anchor?.getBoundingClientRect().top;
   const followEnd = !changed && !anchor && transcriptArticle.scrollHeight - transcriptArticle.scrollTop - transcriptArticle.clientHeight < 48;
   if (changed || !job) {
-    navigationPartId = null;
+    cancelPartNavigation();
     transcriptArticle.replaceChildren();
     partNavigator.replaceChildren();
     previewKey = key;
@@ -225,6 +284,7 @@ function renderTranscript(job, jobs) {
         const button = document.createElement('button');
         button.type = 'button';
         button.setAttribute('aria-label', `Part ${index + 1}`);
+        button.title = `Part ${index + 1}`;
         button.setAttribute('aria-controls', section.id);
         button.innerHTML = '<span class="part-line" aria-hidden="true"></span>';
         partNavigator.append(button);
@@ -250,24 +310,86 @@ function renderTranscript(job, jobs) {
   partNavigator.classList.toggle('is-hidden', !parts.length);
   $('.live-stage').classList.toggle('has-parts', parts.length > 0);
   if (changed) transcriptArticle.scrollTop = 0;
-  else if (anchor?.isConnected) transcriptArticle.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+  else if (navigationFrame !== null) { /* The animation owns scrolling until it ends. */ }
+  else if (anchor?.isConnected) alignNavigationPart();
   else if (followEnd) transcriptArticle.scrollTop = transcriptArticle.scrollHeight;
   scheduleActivePart();
 }
 
-function transcriptFileName(stem, job) {
+function transcriptName(stem, job) {
   const language = (job.language || 'en').toLowerCase();
   const preprocessing = job.use_preprocessing ? job.preprocessing_mode : 'none';
-  return `${stem}_${language}_${preprocessing}.txt`;
+  return `${stem}_${language}_${preprocessing}`;
 }
 
-function queuedTranscriptFileName(job) {
+function queuedTranscriptName(job) {
+  if (job.output_file) return job.output_file.replace(/\.[^.]+$/, '');
   const sourceStem = job.source_name.replace(/\.[^.]+$/, '');
-  return transcriptFileName(sourceStem, job);
+  return transcriptName(sourceStem, job);
+}
+
+function downloadPicker(filename) {
+  const url = `/download/${encodeURIComponent(filename)}`;
+  const formats = [['txt', 'Plain text'], ['md', 'Markdown'], ['html', 'HTML']];
+  return `<details class="download-picker">
+    <summary class="secondary-button">Download <span class="download-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></svg></span></summary>
+    <div class="download-options" aria-label="Download format">${formats.map(([format, label]) =>
+      `<a href="${url}?format=${format}"><span>${label}</span><small>.${format}</small></a>`).join('')}</div>
+  </details>`;
+}
+
+document.addEventListener('click', (event) => {
+  const picker = event.target.closest('.download-picker');
+  document.querySelectorAll('.download-picker[open]').forEach((openPicker) => {
+    if (openPicker !== picker || event.target.closest('.download-options a')) openPicker.open = false;
+  });
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  document.querySelectorAll('.download-picker[open]').forEach((picker) => {
+    picker.open = false;
+    picker.querySelector('summary').focus();
+  });
+});
+document.addEventListener('toggle', (event) => {
+  const picker = event.target;
+  if (picker.matches('.ready-file .download-picker') && picker.open) {
+    picker.querySelector('.download-options').scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+  }
+}, true);
+
+function renderReadyFiles(jobs, mergedOutputs) {
+  const files = [...new Set([
+    ...Object.values(mergedOutputs),
+    ...jobs.filter((job) => job.status === 'completed' && job.output_file).map((job) => job.output_file),
+  ])];
+  $('#readyFilesSection').classList.toggle('is-hidden', !files.length);
+  const list = $('#readyFiles');
+  const signature = JSON.stringify(files);
+  if (list.dataset.signature === signature) return;
+  const existing = new Map([...list.children].map((row) => [row.dataset.file, row]));
+  files.forEach((filename, index) => {
+    let row = existing.get(filename);
+    if (!row) {
+      row = document.createElement('li');
+      row.className = 'ready-file';
+      row.dataset.file = filename;
+      row.innerHTML = `<span class="ready-file-name"></span>${downloadPicker(filename)}`;
+      const name = row.querySelector('.ready-file-name');
+      name.textContent = filename.replace(/\.[^.]+$/, '');
+      name.title = name.textContent;
+      row.querySelector('summary').title = `Download ${name.textContent}`;
+    }
+    if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
+  });
+  const included = new Set(files);
+  [...list.children].forEach((row) => { if (!included.has(row.dataset.file)) row.remove(); });
+  list.dataset.signature = signature;
 }
 
 function statusText(job) {
-  if (job.status === 'failed') return job.error;
+  if (job.status === 'failed') return job.error || 'Transcription failed';
+  if (job.status === 'completed' && job.merge_requested) return 'Part completed';
   if (job.status === 'preprocessing') return `Preprocessing · ${Math.round(job.preprocessing_progress)}%`;
   if (job.status === 'ready') return 'Ready for transcription';
   if (job.status === 'transcribing') return `${job.device_fallback ? 'GPU unavailable · CPU fallback' : 'Transcribing'} · ${Math.round(job.transcription_progress)}%`;
@@ -424,8 +546,8 @@ function renderState(state) {
       const currentProgress = ['preprocessing', 'ready'].includes(job.phase) ? job.preprocessing_progress : job.transcription_progress;
       return `
       <div class="queue-item ${job.id === selectedPreviewId ? 'selected' : ''} ${job.merge_requested ? 'merge-group' : ''}" style="${job.merge_requested ? `--group-color:${mergeColor(job.group_id)}` : ''}" data-id="${job.id}" data-group-id="${job.group_id}" data-status="${job.status}" draggable="${job.status === 'queued'}" role="button" tabindex="0">
-        <span class="queue-state ${job.status}">${statusIcon(job.status)}</span>
-        <span class="queue-copy"><strong>${escapeHtml(queuedTranscriptFileName(job))}</strong><small>${job.merge_requested ? '<em>Merge group</em> · ' : ''}${escapeHtml(statusText(job))}</small><i><b style="width:${currentProgress}%"></b></i></span>
+        <span class="queue-state ${job.status}" aria-hidden="true">${statusIcon(job.status)}</span>
+        <span class="queue-copy"><strong>${escapeHtml(queuedTranscriptName(job))}</strong><small>${job.merge_requested ? '<em>Merge group</em> · ' : ''}${escapeHtml(statusText(job))}</small><i><b style="width:${currentProgress}%"></b></i></span>
         <span class="queue-actions">${pauseControl(job)}${trashControl(job)}</span>
       </div>`;
     }).join('');
@@ -433,7 +555,7 @@ function renderState(state) {
   }
   if (!selectedPreviewId || !jobs.some((job) => job.id === selectedPreviewId)) selectedPreviewId = jobs.find((job) => activeStatuses.includes(job.status))?.id || jobs[0]?.id;
   renderPreview(jobs.find((job) => job.id === selectedPreviewId), jobs, state.merged_outputs);
-  $('#mergedOutputs').innerHTML = Object.values(state.merged_outputs).map((name) => `<a href="/download/${encodeURIComponent(name)}"><span>✓</span><div><strong>Merged file ready</strong><small>${escapeHtml(name)}</small></div><b>↓</b></a>`).join('');
+  renderReadyFiles(jobs, state.merged_outputs);
 }
 
 function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.merged_outputs) {
@@ -442,6 +564,7 @@ function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.mer
     activeStopId = null;
     document.body.classList.remove('preview-paused');
     document.body.classList.remove('is-transcribing');
+    document.body.classList.remove('preview-completed');
     stop.classList.add('is-hidden');
     $('#previewTitle').textContent = 'No audio selected';
     $('#preprocessingBar').style.width = '0%';
@@ -450,6 +573,7 @@ function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.mer
     $('#transcriptionLabel').textContent = '0%';
     renderTranscript(null, jobs);
     $('#downloadCurrent').classList.add('is-hidden');
+    $('#downloadCurrent').querySelectorAll('details[open]').forEach((picker) => { picker.open = false; });
     return;
   }
   const isMerge = job.merge_requested;
@@ -458,10 +582,10 @@ function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.mer
   activeStopId = activeJob?.id || null;
   document.body.classList.toggle('preview-paused', ['pausing', 'paused'].includes(activeJob?.status));
   document.body.classList.toggle('is-transcribing', activeStatuses.includes(activeJob?.status));
-  const mergeTitle = (job.merge_name || 'merged_lectures').replace(/\.txt$/i, '');
+  const mergeTitle = (job.merge_name || 'merged_lectures').replace(/(?:\.(?:txt|md|html))+$/i, '');
   $('#previewTitle').textContent = isMerge
-    ? transcriptFileName(mergeTitle, job)
-    : queuedTranscriptFileName(job);
+    ? (mergedOutputs[job.group_id]?.replace(/\.[^.]+$/, '') || transcriptName(mergeTitle, job))
+    : queuedTranscriptName(job);
   const preprocessing = displayJob.use_preprocessing ? displayJob.preprocessing_progress : 100;
   $('#preprocessingBar').style.width = `${preprocessing}%`;
   $('#preprocessingLabel').textContent = displayJob.use_preprocessing ? `${Math.round(preprocessing)}%` : 'Skipped';
@@ -473,8 +597,12 @@ function renderPreview(job, jobs = lastState.jobs, mergedOutputs = lastState.mer
   stop.textContent = activeJob?.status === 'stopping' ? 'Stopping…' : (activeJob?.phase === 'preprocessing' ? 'Stop preprocessing' : 'Stop transcription');
   const download = $('#downloadCurrent');
   const outputFile = isMerge ? mergedOutputs[job.group_id] : job.output_file;
+  document.body.classList.toggle('preview-completed', Boolean(outputFile));
   download.classList.toggle('is-hidden', !outputFile);
-  if (outputFile) download.href = `/download/${encodeURIComponent(outputFile)}`;
+  if (download.dataset.file !== (outputFile || '')) {
+    download.innerHTML = outputFile ? downloadPicker(outputFile) : '';
+    download.dataset.file = outputFile || '';
+  }
 }
 
 $('#stopCurrent').onclick = () => {

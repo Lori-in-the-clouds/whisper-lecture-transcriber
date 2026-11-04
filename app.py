@@ -7,13 +7,15 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, render_template, request, send_from_directory
+from flask import Flask, Response, jsonify, render_template, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
 from output_naming import transcript_output_stem
+from transcript_export import OUTPUT_MIME_TYPES, render_transcript
 from transcription_service import TranscriptionCancelled, TranscriptionService
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -342,7 +344,10 @@ class QueueManager:
                     job.use_preprocessing,
                     job.preprocessing_mode,
                 ))
-                (OUTPUT_DIR / output_name).write_text(final_text.strip() + "\n", encoding="utf-8")
+                self._save_transcript(
+                    output_name, [final_text], title=Path(job.source_name).stem,
+                    language=job.language,
+                )
             with self.changed:
                 job.transcript, job.progress, job.output_file, job.status = final_text, 100.0, output_name, "completed"
                 job.preprocessing_progress = 100.0
@@ -373,12 +378,13 @@ class QueueManager:
 
     def _finish_group_if_ready(self, group_id: str) -> None:
         with self.changed:
+            if group_id in self.group_outputs:
+                return
             jobs = [self.jobs[job_id] for job_id in self.group_order.get(group_id, [])]
             if not jobs or not all(job.status in {"completed", "failed", "cancelled"} for job in jobs):
                 return
             if not jobs[0].merge_requested or any(job.status != "completed" for job in jobs):
                 return
-            sections = [f"-----------------\nPart {index}\n-----------------\n\n{job.transcript.strip()}" for index, job in enumerate(jobs, 1)]
             first_job = jobs[0]
             filename = self._unique_output_name(transcript_output_stem(
                 self._merged_output_stem(first_job.merge_name),
@@ -386,7 +392,10 @@ class QueueManager:
                 first_job.use_preprocessing,
                 first_job.preprocessing_mode,
             ), preserve_name=True)
-            (OUTPUT_DIR / filename).write_text("\n\n".join(sections) + "\n", encoding="utf-8")
+            self._save_transcript(
+                filename, [job.transcript for job in jobs], merged=True,
+                title=self._merged_output_stem(first_job.merge_name), language=first_job.language,
+            )
             self.group_outputs[group_id] = filename
             self.changed.notify_all()
 
@@ -394,13 +403,23 @@ class QueueManager:
     def _merged_output_stem(requested_name: str) -> str:
         # Keep the user-facing name (including spaces) while preventing it from
         # escaping the output directory or producing an invalid download name.
-        stem = re.sub(r"\.txt$", "", (requested_name or "").strip(), flags=re.IGNORECASE)
+        stem = re.sub(r"(?:\.(?:txt|md|html))+$", "", (requested_name or "").strip(), flags=re.IGNORECASE)
         stem = re.sub(r'[\\/\x00-\x1f\x7f<>:"|?*]', "_", stem).strip(" .")
-        return stem[:80].rstrip(" .") or "trascrizione_unita"
+        return stem[:80].rstrip(" .") or "merged_lectures"
+
+    @staticmethod
+    def _save_transcript(filename: str, texts: list[str], *, merged: bool = False,
+                         title: str = "Transcript", language: str = "auto") -> None:
+        source = {"texts": texts, "merged": merged, "title": title, "language": language}
+        # Keep structured parts on disk so later exports never need the audio or queue.
+        sources = OUTPUT_DIR / ".sources"
+        sources.mkdir(exist_ok=True)
+        (sources / f"{filename}.json").write_text(json.dumps(source, ensure_ascii=False), encoding="utf-8")
+        (OUTPUT_DIR / filename).write_text(render_transcript(**source), encoding="utf-8")
 
     def _unique_output_name(self, stem: str, *, preserve_name: bool = False) -> str:
         safe = stem.strip("._") if preserve_name else secure_filename(stem).strip("._")
-        safe = safe or "trascrizione"
+        safe = safe or "transcript"
         candidate, counter = f"{safe}.txt", 2
         while (OUTPUT_DIR / candidate).exists():
             candidate, counter = f"{safe}_{counter}.txt", counter + 1
@@ -433,7 +452,7 @@ def create_jobs():
             return jsonify({"error": "Invalid preprocessing worker count."}), 400
     keep_processed = request.form.get("keep_processed_audio", "false") == "true"
     merge_requested = request.form.get("merge_requested", "false") == "true"
-    merge_name = request.form.get("merge_name", "trascrizione_unita")
+    merge_name = request.form.get("merge_name", "merged_lectures")
     compute_device = request.form.get("compute_device", "gpu").lower()
     if (model not in {"Turbo", "Large"} or mode not in {"light", "balanced", "aggressive"}
             or compute_device not in {"gpu", "cpu"}
@@ -519,7 +538,26 @@ def events():
 
 @app.get("/download/<path:filename>")
 def download(filename: str):
-    return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
+    output_format = request.args.get("format")
+    if output_format is not None:
+        if output_format not in OUTPUT_MIME_TYPES:
+            return jsonify({"error": "Unsupported download format."}), 400
+        if Path(filename).name != filename or "\\" in filename:
+            return jsonify({"error": "Transcript not found."}), 404
+        source_path = OUTPUT_DIR / ".sources" / f"{filename}.json"
+        if source_path.is_file():
+            source = json.loads(source_path.read_text(encoding="utf-8"))
+            content = render_transcript(**source, output_format=output_format)
+            return send_file(
+                BytesIO(content.encode("utf-8")), as_attachment=True,
+                download_name=f"{Path(filename).stem}.{output_format}",
+                mimetype=OUTPUT_MIME_TYPES[output_format],
+            )
+        # Existing TXT files remain downloadable even if they predate export sources.
+        if output_format != "txt" or Path(filename).suffix.lower() != ".txt":
+            return jsonify({"error": "The export source for this transcript is unavailable."}), 404
+    mimetype = OUTPUT_MIME_TYPES.get(Path(filename).suffix.lower().lstrip("."))
+    return send_from_directory(OUTPUT_DIR, filename, as_attachment=True, mimetype=mimetype)
 
 
 @app.get("/health")

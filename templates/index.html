@@ -17,7 +17,7 @@
       <section class="transcript-panel">
         <div class="transcript-toolbar">
           <div><span class="section-label">LIVE TRANSCRIPT</span><h1 id="previewTitle">No audio selected</h1></div>
-          <div class="transcript-actions"><button id="stopCurrent" class="stop-button is-hidden">Stop transcription</button><a id="downloadCurrent" class="secondary-button is-hidden" href="#">Download TXT</a></div>
+          <div class="transcript-actions"><button id="stopCurrent" class="stop-button is-hidden">Stop transcription</button><div id="downloadCurrent" class="is-hidden"></div></div>
         </div>
         <div class="phase-progress" id="phaseProgress">
           <div class="phase-row"><span>Preprocessing</span><div><i id="preprocessingBar"></i></div><b id="preprocessingLabel">0%</b></div>
@@ -25,7 +25,7 @@
         </div>
         <div class="live-stage">
           <div id="emptyPreview" class="empty-preview"><div class="sound-orbit"><span></span><span></span><span></span><span></span><span></span></div><strong>Your transcript will appear here.</strong><p>Add one or more audio files from the panel on the right.</p></div>
-          <article id="transcriptText" class="transcript-text is-hidden"></article>
+          <article id="transcriptText" class="transcript-text is-hidden" tabindex="0" aria-label="Transcript"></article>
           <nav id="partNavigator" class="part-navigator is-hidden" aria-label="Transcript parts"></nav>
         </div>
       </section>
@@ -46,8 +46,8 @@
             <div class="segmented preprocessing-selector" id="preprocessModes"><button class="active" data-value="light">Light</button><button data-value="balanced">Balanced</button><button data-value="aggressive">Strong</button></div>
             <div class="sampling-setting" id="preprocessSampleRateSetting"><div class="option-title"><div><strong>Processed audio rate</strong><small>Original preserves the saved audio bandwidth</small></div></div><div class="segmented sample-rate-selector" id="preprocessSampleRate"><button class="active" data-value="source">Original</button><button data-value="32000">32 kHz</button><button data-value="16000">16 kHz</button></div></div>
             <div class="worker-setting" id="preprocessWorkerSetting"><div class="option-title"><div><strong>Preprocessing workers</strong><small>Audio files processed at the same time</small></div></div><div class="segmented worker-selector" id="preprocessWorkers"><button data-value="1">1</button><button class="active" data-value="2">2</button><button data-value="3">3</button><button data-value="4">4</button></div></div>
-            <label class="check-row"><input id="keepProcessed" type="checkbox"><span class="custom-check"></span><span><strong>Keep processed audio</strong><small>Save the cleaned audio copy</small></span></label>
-            <label class="check-row"><input id="mergeFiles" type="checkbox"><span class="custom-check"></span><span><strong>Merge transcripts</strong><small>Add Part 1, Part 2… headings</small></span></label>
+            <label class="check-row" for="keepProcessed"><input id="keepProcessed" type="checkbox"><span><strong>Keep processed audio</strong><small>Save the cleaned audio copy</small></span></label>
+            <label class="check-row" for="mergeFiles"><input id="mergeFiles" type="checkbox" aria-controls="mergeNameWrap"><span><strong>Merge transcripts</strong><small>Add Part 1, Part 2… headings</small></span></label>
             <label id="mergeNameWrap" class="field merge-name is-hidden"><span>Merged file name</span><input id="mergeName" value="merged_lectures" maxlength="80"></label>
             <button id="startButton" class="primary-button" disabled><span>Add to queue</span><b>→</b></button><p id="formError" class="form-error"></p>
           </section>
@@ -55,7 +55,11 @@
           <section class="drawer-section queue-section">
             <span class="section-label">QUEUE</span>
             <div id="queueList" class="queue-list"><div class="queue-empty"><p>No audio in queue</p></div></div>
-            <div id="mergedOutputs" class="merged-outputs"></div>
+          </section>
+
+          <section id="readyFilesSection" class="drawer-section is-hidden" aria-labelledby="readyFilesTitle">
+            <h2 id="readyFilesTitle" class="ready-files-title">Ready files</h2>
+            <ul id="readyFiles" class="ready-files"></ul>
           </section>
         </div>
       </aside>
