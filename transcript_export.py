@@ -13,7 +13,7 @@ OUTPUT_MIME_TYPES = {
 
 def render_transcript(texts: Sequence[str], output_format: str = "txt", *,
                       merged: bool = False, title: str = "Transcript",
-                      language: str = "auto") -> str:
+                      language: str = "auto", part_languages: Sequence[str] | None = None) -> str:
     if output_format not in OUTPUT_MIME_TYPES:
         raise ValueError("Unsupported output format")
     texts = [text.strip() for text in texts]
@@ -30,7 +30,9 @@ def render_transcript(texts: Sequence[str], output_format: str = "txt", *,
     sections = []
     for index, text in enumerate(texts, 1):
         heading = f"<h1>Part {index}</h1>\n" if merged else ""
-        sections.append(f'<section>\n{heading}<div class="transcript">{escape(text)}</div>\n</section>')
+        part_language = part_languages[index - 1] if part_languages is not None else "auto"
+        part_lang = f' lang="{escape(part_language, quote=True)}"' if part_language != "auto" else ""
+        sections.append(f'<section>\n{heading}<div class="transcript"{part_lang}>{escape(text)}</div>\n</section>')
     lang = f' lang="{escape(language, quote=True)}"' if language != "auto" else ""
     content = "\n".join(sections)
     return f'''<!doctype html>

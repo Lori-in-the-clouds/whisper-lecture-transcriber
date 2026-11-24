@@ -15,6 +15,7 @@ RNNOISE_MODEL_PATH = (
     / "rnnoise"
     / "somnolent-hogwash.rnnn"
 )
+WHISPER_TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 
 
 class RepetitiveTranscriptionError(RuntimeError):
@@ -284,6 +285,38 @@ def preprocess_audio(input_path, output_dir, mode="light"):
 # =========================
 # 🧠 MLX TRANSCRIBER
 # =========================
+def _mlx_model_name(model):
+    return (
+        "mlx-community/whisper-large-v3-mlx" if model == "Large"
+        else "mlx-community/whisper-large-v3-turbo"
+    )
+
+
+def decode_mlx(audio, *, model, language, initial_prompt=None,
+               temperature=WHISPER_TEMPERATURES, verbose=None):
+    """Transcribe a file path or normalized waveform with the shared decoding settings."""
+    result = mlx_whisper.transcribe(
+        audio,
+        path_or_hf_repo=_mlx_model_name(model),
+        verbose=verbose,
+        language=language,
+        temperature=temperature,
+        compression_ratio_threshold=2.4,
+        logprob_threshold=-1.0,
+        no_speech_threshold=0.6,
+        condition_on_previous_text=False,
+        initial_prompt=initial_prompt,
+    )
+    text = result["text"]
+    if has_repetition_loop(text):
+        raise RepetitiveTranscriptionError(
+            "Whisper produced abnormal repetition even after automatic retries. "
+            "Check the audio at this point and try again with the correct language "
+            "or a different audio preprocessing level."
+        )
+    return text
+
+
 def transcribe_mlx(
     file_path,
     output_dir=None,
@@ -294,7 +327,7 @@ def transcribe_mlx(
     keep_processed_audio=True,
     processed_dir=None,
     initial_prompt=None,
-    temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+    temperature=WHISPER_TEMPERATURES,
 ):
     # Path to the script's directory
     base_dir = Path(__file__).parent.resolve()
@@ -307,14 +340,8 @@ def transcribe_mlx(
     output_dir.mkdir(parents=True, exist_ok=True)
     processed_dir.mkdir(parents=True, exist_ok=True)
 
-    model_name = (
-        "mlx-community/whisper-large-v3-mlx"
-        if model == "Large"
-        else "mlx-community/whisper-large-v3-turbo"
-    )
-
     print(f"\n🎧 Transcribing: {file_path.name}")
-    print(f"🧠 Model: {model_name}")
+    print(f"🧠 Model: {_mlx_model_name(model)}")
 
     # =========================
     # 🔧 PREPROCESS
@@ -336,28 +363,10 @@ def transcribe_mlx(
     # =========================
     # 🧠 WHISPER WITH PROGRESS BAR
     # =========================
-    with WhisperProgressBar(duration, desc=f"🧠 Transcribing ({model})") as wpbar:
-        result = mlx_whisper.transcribe(
-            str(audio_to_use),
-            path_or_hf_repo=model_name,
-            verbose=False,
-            language=language,
-            # Retry repetitive/low-confidence windows using Whisper's built-in
-            # fallback. A single temperature disables those retries entirely.
-            temperature=temperature,
-            compression_ratio_threshold=2.4,
-            logprob_threshold=-1.0,
-            no_speech_threshold=0.6,
-            condition_on_previous_text=False,
-            initial_prompt=initial_prompt,
-        )
-
-    text = result["text"]
-    if has_repetition_loop(text):
-        raise RepetitiveTranscriptionError(
-            "Whisper produced abnormal repetition even after automatic retries. "
-            "Check the audio at this point and try again with the correct language "
-            "or a different audio preprocessing level."
+    with WhisperProgressBar(duration, desc=f"🧠 Transcribing ({model})"):
+        text = decode_mlx(
+            str(audio_to_use), model=model, language=language,
+            initial_prompt=initial_prompt, temperature=temperature, verbose=False,
         )
 
     output_file = output_dir / f"{transcript_output_stem(file_path.stem, language, use_preprocessing, preprocessing_mode)}.txt"

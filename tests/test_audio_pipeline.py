@@ -94,6 +94,23 @@ class PreprocessingIntegrationTests(unittest.TestCase):
         )
         return json.loads(completed.stdout)["streams"][0]
 
+    def test_in_memory_chunk_matches_wav_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, chunk = root / "source.wav", root / "chunk.wav"
+            self._write_stereo_quality_sample(source, sample_rate=44100)
+            subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", "1.125",
+                 "-i", str(source), "-t", "1.25", "-vn", "-ac", "1", "-ar", "16000",
+                 "-c:a", "pcm_s16le", str(chunk)],
+                capture_output=True, check=True,
+            )
+            with wave.open(str(chunk), "rb") as wav:
+                expected = wav.readframes(wav.getnframes())
+            samples = TranscriptionService._read_audio_chunk(source, 1.125, 1.25)
+            self.assertEqual(samples.dtype.name, "float32")
+            self.assertEqual((samples * 32768).astype("<i2").tobytes(), expected)
+
     def test_source_rate_is_preserved_in_lossless_flac(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             temp = Path(temp_name)

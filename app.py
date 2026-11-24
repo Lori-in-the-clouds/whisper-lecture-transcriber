@@ -25,6 +25,11 @@ for directory in (UPLOAD_DIR, OUTPUT_DIR, PROCESSED_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 ALLOWED_EXTENSIONS = {".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg", ".mp4", ".mov"}
 MAX_PREPROCESSING_WORKERS = 4
+DEFAULT_LANGUAGE = "en"
+LANGUAGE_OPTIONS = {
+    "en": "English", "it": "Italian", "fr": "French", "de": "German",
+    "es": "Spanish", "auto": "Auto detect",
+}
 
 
 @dataclass
@@ -386,15 +391,18 @@ class QueueManager:
             if not jobs[0].merge_requested or any(job.status != "completed" for job in jobs):
                 return
             first_job = jobs[0]
+            part_languages = [job.language.lower() for job in jobs]
+            mixed = len(set(part_languages)) > 1
             filename = self._unique_output_name(transcript_output_stem(
                 self._merged_output_stem(first_job.merge_name),
-                first_job.language,
+                "mixed" if mixed else part_languages[0],
                 first_job.use_preprocessing,
                 first_job.preprocessing_mode,
             ), preserve_name=True)
             self._save_transcript(
                 filename, [job.transcript for job in jobs], merged=True,
-                title=self._merged_output_stem(first_job.merge_name), language=first_job.language,
+                title=self._merged_output_stem(first_job.merge_name),
+                language="auto" if mixed else part_languages[0], part_languages=part_languages,
             )
             self.group_outputs[group_id] = filename
             self.changed.notify_all()
@@ -409,8 +417,11 @@ class QueueManager:
 
     @staticmethod
     def _save_transcript(filename: str, texts: list[str], *, merged: bool = False,
-                         title: str = "Transcript", language: str = "auto") -> None:
+                         title: str = "Transcript", language: str = "auto",
+                         part_languages: list[str] | None = None) -> None:
         source = {"texts": texts, "merged": merged, "title": title, "language": language}
+        if part_languages is not None:
+            source["part_languages"] = part_languages
         # Keep structured parts on disk so later exports never need the audio or queue.
         sources = OUTPUT_DIR / ".sources"
         sources.mkdir(exist_ok=True)
@@ -432,7 +443,7 @@ manager = QueueManager()
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", language_options=LANGUAGE_OPTIONS, default_language=DEFAULT_LANGUAGE)
 
 
 @app.post("/api/jobs")
@@ -440,7 +451,8 @@ def create_jobs():
     files = request.files.getlist("files")
     if not files:
         return jsonify({"error": "Select at least one audio file."}), 400
-    model, language = request.form.get("model", "Large"), request.form.get("language", "en")
+    model, language = request.form.get("model", "Large"), request.form.get("language", DEFAULT_LANGUAGE)
+    file_languages = [code.lower() for code in request.form.getlist("file_languages")]
     mode = request.form.get("preprocessing_mode", "light")
     preprocessing_sample_rate = request.form.get("preprocessing_sample_rate", "source")
     use_preprocessing = request.form.get("use_preprocessing", "false") == "true"
@@ -461,17 +473,22 @@ def create_jobs():
         return jsonify({"error": "Invalid configuration."}), 400
     if not re.fullmatch(r"[a-zA-Z-]{2,12}|auto", language):
         return jsonify({"error": "Invalid language code."}), 400
+    if file_languages and len(file_languages) != len(files):
+        return jsonify({"error": "Provide one language for each audio file."}), 400
+    if any(code not in LANGUAGE_OPTIONS for code in file_languages):
+        return jsonify({"error": "Unsupported file language."}), 400
     invalid = [upload.filename or "audio" for upload in files if Path(upload.filename or "audio").suffix.lower() not in ALLOWED_EXTENSIONS]
     if invalid:
         return jsonify({"error": f"Unsupported format: {invalid[0]}"}), 400
     group_id, jobs = uuid.uuid4().hex, []
-    for upload in files:
+    languages = file_languages or [language] * len(files)
+    for upload, file_language in zip(files, languages, strict=True):
         original = upload.filename or "audio"
         extension = Path(original).suffix.lower()
         job_id = uuid.uuid4().hex
         stored_path = UPLOAD_DIR / f"{job_id}{extension}"
         upload.save(stored_path)
-        jobs.append(Job(job_id, group_id, original, str(stored_path), model, language, use_preprocessing, mode, keep_processed, merge_requested, merge_name, compute_device, preprocessing_sample_rate))
+        jobs.append(Job(job_id, group_id, original, str(stored_path), model, file_language, use_preprocessing, mode, keep_processed, merge_requested, merge_name, compute_device, preprocessing_sample_rate))
     manager.add(jobs, preprocessing_workers)
     return jsonify({"group_id": group_id, "jobs": [asdict(job) for job in jobs]}), 201
 

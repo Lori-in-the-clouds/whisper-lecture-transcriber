@@ -49,6 +49,7 @@ class ExportApiTests(unittest.TestCase):
         response = self.create()
         self.assertEqual(response.status_code, 201)
         job = next(iter(self.manager.jobs.values()))
+        self.assertEqual(job.language, "en")
         self.assertNotIn("output_format", response.json["jobs"][0])
         self.finish(job)
         self.assertEqual(job.status, "completed")
@@ -62,6 +63,7 @@ class ExportApiTests(unittest.TestCase):
             for job in jobs:
                 self.finish(job)
             name = self.manager.group_outputs[jobs[0].group_id] if merged else jobs[0].output_file
+            self.assertTrue(name.endswith("_en_none.txt"))
             self.assertNotIn(".HTML_", name)
             saved_text = (self.outputs / name).read_text()
             calls = self.manager.service.transcribe_prepared.call_count
@@ -82,6 +84,49 @@ class ExportApiTests(unittest.TestCase):
                         self.assertIn("È una lezione <1> & 2.", text)
                     self.assertEqual(self.manager.service.transcribe_prepared.call_count, calls)
                     self.assertEqual((self.outputs / name).read_text(), saved_text)
+
+    def test_mixed_languages_follow_each_file_through_transcription_and_export(self):
+        response = self.client.post("/api/jobs", data={
+            "files": [(io.BytesIO(b"audio"), filename) for filename in ("auto.m4a", "italian.m4a", "english.m4a")],
+            "merge_requested": "true",
+            "file_languages": ["auto", "IT", "en"],
+        })
+        self.assertEqual(response.status_code, 201)
+        jobs = [self.manager.jobs[item["id"]] for item in response.json["jobs"]]
+        self.assertEqual([(job.source_name, job.language) for job in jobs],
+                         [("auto.m4a", "auto"), ("italian.m4a", "it"), ("english.m4a", "en")])
+        self.manager.service.transcribe_prepared.side_effect = ["English text", "Testo italiano", "Detected text"]
+        for job in reversed(jobs):
+            self.finish(job)
+        calls = self.manager.service.transcribe_prepared.call_args_list
+        self.assertEqual([call.kwargs["language"] for call in calls], ["en", "it", "auto"])
+        name = self.manager.group_outputs[jobs[0].group_id]
+        self.assertEqual(name, "merged_lectures_mixed_none.txt")
+        for output_format in ("txt", "md", "html"):
+            with self.subTest(output_format=output_format):
+                download = self.client.get("/download/" + name, query_string={"format": output_format})
+                self.assertEqual(download.status_code, 200)
+                text = download.get_data(as_text=True)
+                download.close()
+                self.assertLess(text.index("Detected text"), text.index("Testo italiano"))
+                self.assertLess(text.index("Testo italiano"), text.index("English text"))
+                if output_format == "html":
+                    self.assertIn("<html>", text)
+                    self.assertIn('<div class="transcript">Detected text</div>', text)
+                    self.assertIn('<div class="transcript" lang="it">Testo italiano</div>', text)
+                    self.assertIn('<div class="transcript" lang="en">English text</div>', text)
+
+    def test_invalid_file_languages_are_rejected_before_saving_uploads(self):
+        for languages in (["en"], ["en", "it", "fr"], ["en", "zz"]):
+            with self.subTest(languages=languages):
+                response = self.client.post("/api/jobs", data={
+                    "files": [(io.BytesIO(b"audio"), name) for name in ("one.m4a", "two.m4a")],
+                    "merge_requested": "true",
+                    "file_languages": languages,
+                })
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(list(self.uploads.iterdir()), [])
+        self.assertFalse(self.manager.jobs)
 
     def test_invalid_download_format_is_rejected(self):
         response = self.client.get("/download/lecture.txt", query_string={"format": "../../other"})

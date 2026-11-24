@@ -44,13 +44,10 @@ class RepetitionTests(unittest.TestCase):
     def test_chunks_do_not_receive_generated_text_as_prompt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            result = root / "result.txt"
-            result.write_text("A normal sentence.", encoding="utf-8")
             service = TranscriptionService(root / "processed", engine="mlx")
             with patch.object(legacy, "get_audio_duration", return_value=60), \
-                 patch("transcription_service.subprocess.run") as ffmpeg, \
-                 patch.object(legacy, "transcribe_mlx", return_value=result) as decode:
-                ffmpeg.return_value.returncode = 0
+                 patch.object(service, "_read_audio_chunk"), \
+                 patch.object(legacy, "decode_mlx", return_value="A normal sentence.") as decode:
                 service._transcribe_mlx_chunks(
                     root / "audio.wav", "Large", "en", lambda *_: None,
                     lambda: False, lambda: False, lambda _: None,
@@ -63,10 +60,9 @@ class RepetitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             service = TranscriptionService(Path(directory), engine="mlx")
             with patch.object(legacy, "get_audio_duration", return_value=60), \
-                 patch("transcription_service.subprocess.run") as ffmpeg, \
-                 patch.object(legacy, "transcribe_mlx",
+                 patch.object(service, "_read_audio_chunk"), \
+                 patch.object(legacy, "decode_mlx",
                               side_effect=legacy.RepetitiveTranscriptionError("loop")) as decode:
-                ffmpeg.return_value.returncode = 0
                 updates = []
                 text = service._transcribe_mlx_chunks(
                     Path(directory) / "audio.wav", "Large", "en", lambda *args: updates.append(args),
@@ -79,19 +75,17 @@ class RepetitionTests(unittest.TestCase):
                 self.assertEqual(updates[-1][1], 99)
 
     def test_second_pass_recovers_without_skipping(self):
-        self._check_recovery(["loop", "Recovered."], "Recovered.", 2)
+        self._check_recovery(["loop", "Recovered."], "Recovered.", 2, 1)
 
     def test_valid_text_after_skipped_chunk_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            result = root / "result.txt"
-            result.write_text("The lecture continues normally.", encoding="utf-8")
+            result = "The lecture continues normally."
             service = TranscriptionService(root, engine="mlx")
             with patch.object(legacy, "get_audio_duration", return_value=60), \
-                 patch("transcription_service.subprocess.run") as ffmpeg, \
-                 patch.object(legacy, "transcribe_mlx", side_effect=
+                 patch.object(service, "_read_audio_chunk"), \
+                 patch.object(legacy, "decode_mlx", side_effect=
                               [legacy.RepetitiveTranscriptionError("loop")] * 14 + [result, result]):
-                ffmpeg.return_value.returncode = 0
                 text = service._transcribe_mlx_chunks(
                     root / "audio.wav", "Large", "en", lambda *_: None,
                     lambda: False, lambda: False, lambda _: None,
@@ -102,8 +96,6 @@ class RepetitionTests(unittest.TestCase):
     def test_pause_between_retries_is_honored(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            result = root / "result.txt"
-            result.write_text("Recovered.", encoding="utf-8")
             service = TranscriptionService(root, engine="mlx")
             pause = [False]
             states = []
@@ -116,12 +108,11 @@ class RepetitionTests(unittest.TestCase):
                 if not states:
                     pause[0] = True
                     raise legacy.RepetitiveTranscriptionError("loop")
-                return result
+                return "Recovered."
 
             with patch.object(legacy, "get_audio_duration", return_value=30), \
-                 patch("transcription_service.subprocess.run") as ffmpeg, \
-                 patch.object(legacy, "transcribe_mlx", side_effect=decode):
-                ffmpeg.return_value.returncode = 0
+                 patch.object(service, "_read_audio_chunk"), \
+                 patch.object(legacy, "decode_mlx", side_effect=decode):
                 text = service._transcribe_mlx_chunks(
                     root / "audio.wav", "Large", "en", lambda *_: None,
                     lambda: False, lambda: pause[0], on_pause,
@@ -131,30 +122,27 @@ class RepetitionTests(unittest.TestCase):
 
     def test_split_recovers_both_halves_without_skipping(self):
         self._check_recovery(["loop", "loop", "First half.", "Second half."],
-                             "First half. Second half.", 4)
+                             "First half. Second half.", 4, 3)
 
     def test_only_unrecoverable_subinterval_is_skipped(self):
         self._check_recovery(["loop"] * 6 + ["Recovered right.", "Recovered second half."],
                              "[UNTRANSCRIBED AUDIO 0.00–7.50 s: persistent repetition "
-                             "after all recovery attempts] Recovered right. Recovered second half.", 8)
+                             "after all recovery attempts] Recovered right. Recovered second half.", 8, 5)
 
-    def _check_recovery(self, responses, expected, calls):
+    def _check_recovery(self, responses, expected, calls, intervals):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            result = root / "result.txt"
             service = TranscriptionService(root, engine="mlx")
 
             def decode(*args, **kwargs):
                 response = responses.pop(0)
                 if response == "loop":
                     raise legacy.RepetitiveTranscriptionError("loop")
-                result.write_text(response, encoding="utf-8")
-                return result
+                return response
 
             with patch.object(legacy, "get_audio_duration", return_value=30), \
-                 patch("transcription_service.subprocess.run") as ffmpeg, \
-                 patch.object(legacy, "transcribe_mlx", side_effect=decode) as mocked:
-                ffmpeg.return_value.returncode = 0
+                 patch.object(service, "_read_audio_chunk") as read_chunk, \
+                 patch.object(legacy, "decode_mlx", side_effect=decode) as mocked:
                 text = service._transcribe_mlx_chunks(
                     root / "audio.wav", "Large", "en", lambda *_: None,
                     lambda: False, lambda: False, lambda _: None,
@@ -162,6 +150,7 @@ class RepetitionTests(unittest.TestCase):
                 self.assertEqual(text, expected)
                 self.assertEqual(mocked.call_count, calls)
                 self.assertEqual(mocked.call_args_list[1].kwargs["temperature"][0], 0.2)
+                self.assertEqual(read_chunk.call_count, intervals)
 
     def test_other_errors_still_propagate(self):
         self._check_interruption(RuntimeError("disk failure"), RuntimeError, lambda: False)
@@ -179,9 +168,8 @@ class RepetitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             service = TranscriptionService(Path(directory), engine="mlx")
             with patch.object(legacy, "get_audio_duration", return_value=30), \
-                 patch("transcription_service.subprocess.run") as ffmpeg, \
-                 patch.object(legacy, "transcribe_mlx", side_effect=side_effect) as decode:
-                ffmpeg.return_value.returncode = 0
+                 patch.object(service, "_read_audio_chunk"), \
+                 patch.object(legacy, "decode_mlx", side_effect=side_effect) as decode:
                 with self.assertRaises(exception):
                     service._transcribe_mlx_chunks(
                         Path(directory) / "audio.wav", "Large", "en", lambda *_: None,
